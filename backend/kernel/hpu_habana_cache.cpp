@@ -1622,7 +1622,7 @@ void RecipeLauncher::Launch(
     std::vector<size_t>& external_tensor_info_indexes,
     const VecOfIValPtrSh& dma_inputs) {
   auto* lazy_context = habana_lazy::get_device_lazy_execution_context();
-  if (lazy_context->getCapturing()) {
+  if (lazy_context && lazy_context->getCapturing()) {
     if (auto* graph = lazy_context->getCaptureGraph()) {
       if (auto* plan = graph->native_capture_plan()) {
         plan->append(
