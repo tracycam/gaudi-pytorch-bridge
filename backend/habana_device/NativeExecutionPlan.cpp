@@ -131,6 +131,7 @@ void NativeExecutionPlan::reject(std::string reason) {
   impl_->leases_by_storage.clear();
   impl_->boundary_leases.clear();
   impl_->stats.commands = 0;
+  impl_->stats.collectives = 0;
 }
 
 void NativeExecutionPlan::append(
@@ -146,12 +147,29 @@ void NativeExecutionPlan::append(
   if (!impl_->stats.reason.empty()) {
     return;
   }
-  if (!launcher.recipe_ || !launcher.collective_kernels_info_ ||
-      !launcher.collective_kernels_info_->Empty() ||
-      !external_events.empty() || !dma_inputs.empty() ||
-      !static_recipe(launcher.recipe_->syn_recipe_handle_)) {
-    reject("initial subset requires static compute-only recipes");
+  if (!launcher.collective_kernels_info_ || !dma_inputs.empty()) {
+    reject("missing collective metadata or unsupported DMA inputs");
     return;
+  }
+  auto collectives = launcher.collective_kernels_info_->SnapshotForReplay();
+  if (!collectives) {
+    reject("unsupported collective kind or dtype");
+    return;
+  }
+  if ((!launcher.recipe_ && collectives->Empty()) ||
+      (launcher.recipe_ && !static_recipe(launcher.recipe_->syn_recipe_handle_))) {
+    reject("missing or non-static compute recipe");
+    return;
+  }
+  if (!launcher.recipe_ && !external_events.empty()) {
+    reject("external tensor events without a compute recipe");
+    return;
+  }
+  for (auto index : external_events) {
+    if (index >= bindings.size()) {
+      reject("external tensor event has no binding");
+      return;
+    }
   }
   if (!impl_->commands.empty() && impl_->commands.front().stream != stream) {
     reject("multiple recipe streams");
@@ -179,6 +197,9 @@ void NativeExecutionPlan::append(
   RecipeCommand command;
   command.launcher = std::make_shared<habana::RecipeLauncher>(launcher);
   command.launcher->time_slot_.reset();
+  command.launcher->collective_kernels_info_ = std::move(collectives);
+  command.external_events = external_events;
+  impl_->stats.collectives += command.launcher->collective_kernels_info_->Count();
   command.stream = stream;
   command.inputs.assign(inputs.begin(), inputs.end());
   command.intermediates = std::make_shared<VecOfIValPtrSh>(
@@ -244,14 +265,24 @@ bool NativeExecutionPlan::replay() {
     }
   }
   try {
-    for (auto& command : impl_->commands) {
-      // graph::launch mutates addresses to physical locked addresses. Reset the
-      // abstract bindings each time; never reuse a physical pointer from capture.
-      command.live_bindings = command.bindings;
-      command.launcher->Launch(
-          command.stream, command.inputs, command.intermediates,
-          command.outputs, command.live_bindings, command.external_events,
-          command.dma_inputs);
+    auto submit = [&]() {
+      for (auto& command : impl_->commands) {
+        // graph::launch mutates addresses to physical locked addresses. Reset the
+        // abstract bindings each time; never reuse a physical pointer from capture.
+        command.live_bindings = command.bindings;
+        command.launcher->Launch(
+            command.stream, command.inputs, command.intermediates,
+            command.outputs, command.live_bindings, command.external_events,
+            command.dma_inputs);
+      }
+    };
+    if (impl_->stats.collectives) {
+      // Queue the whole chain once. The shared HCCL queue preserves ordering
+      // against ordinary collectives; snapshots submit inline inside that job.
+      habana::SubmitCollectivePlan(std::move(submit));
+      ++impl_->stats.queued_replays;
+    } else {
+      submit();
     }
   } catch (...) {
     impl_->stats.failed = true;

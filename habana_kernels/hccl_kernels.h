@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 #pragma once
+#include <functional>
 #include "backend/habana_operator.h"
 
 namespace synapse_helpers {
@@ -20,6 +21,11 @@ using event_done_callback = std::function<void()>;
 }
 
 namespace habana {
+
+class HcclCommunicator;
+// One host submission job, using the bridge's existing ordered HCCL queue.
+// Returns after SDK enqueue, not device completion; propagates enqueue errors.
+void SubmitCollectivePlan(std::function<void()> submit);
 
 class CollectiveOperator : public habana::HabanaOperator {
  public:
@@ -55,12 +61,19 @@ class CollectiveOperator : public habana::HabanaOperator {
     return count;
   }
 
+  // Unsupported collective kinds deliberately provide no replay descriptor.
+  virtual std::shared_ptr<CollectiveOperator> SnapshotForReplay() const {
+    return nullptr;
+  }
+
   virtual void Serialize(std::ostream& os) const = 0;
   virtual void Deserialize(std::istream& is) = 0;
 
  protected:
   int device_id_;
   c10::ScalarType scalar_type_;
+  bool inline_submission_ = false;
+  std::shared_ptr<HcclCommunicator> replay_communicator_;
 };
 
 class HcclBroadcastOperator : public CollectiveOperator {
@@ -109,6 +122,8 @@ class HcclAllreduceOperator : public CollectiveOperator {
       std::vector<at::Tensor>& pt_outputs,
       bool async,
       synapse_helpers::event_done_callback cleanup_callback) const override;
+
+  std::shared_ptr<CollectiveOperator> SnapshotForReplay() const override;
 
  private:
   uint8_t reduce_op_;
@@ -190,6 +205,8 @@ class HcclAllgatherOutOperator : public CollectiveOperator {
       std::vector<at::Tensor>& pt_outputs,
       bool async,
       synapse_helpers::event_done_callback cleanup_callback) const override;
+
+  std::shared_ptr<CollectiveOperator> SnapshotForReplay() const override;
 
  private:
   int64_t comm_id_;

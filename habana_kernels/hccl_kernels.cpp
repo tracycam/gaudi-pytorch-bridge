@@ -180,7 +180,8 @@ void collective(
     std::vector<int64_t> communicator_ids,
     bool async,
     synapse_helpers::event_done_callback done_cb,
-    Fn fn) {
+    Fn fn,
+    bool inline_submission = false) {
   for (size_t i = 0; i < inputs.size(); ++i) {
     HABANA_ASSERT(
         devices.at(i) == 0,
@@ -237,8 +238,12 @@ void collective(
       }
     }
 
-    auto pr = std::make_shared<std::promise<bool>>();
-    std::future<bool> fut = pr->get_future();
+    std::shared_ptr<std::promise<bool>> pr;
+    std::future<bool> fut;
+    if (!inline_submission) {
+      pr = std::make_shared<std::promise<bool>>();
+      fut = pr->get_future();
+    }
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
     auto func = [fn = fn,
                  input = std::make_shared<PtTensorInfo>(*inputs.at(i)),
@@ -330,7 +335,9 @@ void collective(
             recipe_counter.decrease_and_notify();
             done_cb();
           });
-      pr->set_value(hccl_result == hcclSuccess);
+      if (pr) {
+        pr->set_value(hccl_result == hcclSuccess);
+      }
 
       if (!async) {
         synStatus syn_result = synSuccess;
@@ -351,7 +358,7 @@ void collective(
     };
     // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
 
-    if (GET_ENV_FLAG_NEW(PT_HPU_DISABLE_ASYNC_COLLECTIVE)) {
+    if (inline_submission || GET_ENV_FLAG_NEW(PT_HPU_DISABLE_ASYNC_COLLECTIVE)) {
       func();
     } else {
       JobThreadLazyHCCL::getInstance()->addJob(std::move(func));
@@ -476,6 +483,51 @@ void pointToPoint(
 }
 
 } // anonymous namespace
+
+void SubmitCollectivePlan(std::function<void()> submit) {
+  auto queue = JobThreadLazyHCCL::getInstance();
+  if (queue->isCurrentThread()) {
+    submit();
+    return;
+  }
+  auto completed = std::make_shared<std::promise<void>>();
+  auto future = completed->get_future();
+  queue->addJob([submit = std::move(submit), completed]() {
+    try {
+      submit();
+      completed->set_value();
+    } catch (...) {
+      completed->set_exception(std::current_exception());
+    }
+    return true;
+  });
+  future.get();
+}
+
+std::shared_ptr<CollectiveOperator>
+HcclAllreduceOperator::SnapshotForReplay() const {
+  if (scalar_type_ != at::kFloat && scalar_type_ != at::kBFloat16) {
+    return nullptr;
+  }
+  auto copy = std::make_shared<HcclAllreduceOperator>(device_id_, scalar_type_);
+  copy->reduce_op_ = reduce_op_;
+  copy->comm_id_ = comm_id_;
+  copy->inline_submission_ = true;
+  copy->replay_communicator_ = HcclCommunicator::Get(comm_id_);
+  return copy;
+}
+
+std::shared_ptr<CollectiveOperator>
+HcclAllgatherOutOperator::SnapshotForReplay() const {
+  if (scalar_type_ != at::kFloat && scalar_type_ != at::kBFloat16) {
+    return nullptr;
+  }
+  auto copy = std::make_shared<HcclAllgatherOutOperator>(device_id_, scalar_type_);
+  copy->comm_id_ = comm_id_;
+  copy->inline_submission_ = true;
+  copy->replay_communicator_ = HcclCommunicator::Get(comm_id_);
+  return copy;
+}
 
 void HcclBroadcastOperator::AllocateAndAddSynapseNode(
     synapse_helpers::graph& graph,
@@ -617,7 +669,8 @@ void HcclAllreduceOperator::RunCollective(
           num_elements -= num_elements_in_current_chunk;
         }
         return hccl_result;
-      });
+      },
+      inline_submission_);
 }
 
 void HcclReduceOperator::AllocateAndAddSynapseNode(
@@ -933,7 +986,8 @@ void HcclAllgatherOutOperator::RunCollective(
             *comm->GetHcclHandle(),
             stream);
         return hccl_result;
-      });
+      },
+      inline_submission_);
 }
 
 void HcclReduceScatterOutOperator::AllocateAndAddSynapseNode(

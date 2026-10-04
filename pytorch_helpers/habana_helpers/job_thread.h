@@ -46,6 +46,10 @@ class JobThread {
     mCondVar.notify_one();
   }
 
+  bool isCurrentThread() const {
+    return std::this_thread::get_id() == mTh.get_id();
+  }
+
   int jobCounter() {
     return mJobCounter;
   }

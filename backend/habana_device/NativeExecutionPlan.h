@@ -10,6 +10,8 @@ namespace at::hpu {
 struct NativeReplayStats {
   size_t commands = 0;
   size_t replays = 0;
+  size_t collectives = 0;
+  size_t queued_replays = 0;
   bool ready = false;
   bool failed = false;
   std::string reason;

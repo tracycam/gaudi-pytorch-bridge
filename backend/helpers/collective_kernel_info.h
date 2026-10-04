@@ -64,6 +64,11 @@ class CollectiveKernelInfos {
       bool async,
       synapse_helpers::event_done_callback cleanup_callback) const;
   void ClearAllPtAndSynTensors();
+  // Deep copy patched tensor metadata and immutable typed operator parameters.
+  // nullptr means the complete collection is outside the admitted subset.
+  std::shared_ptr<CollectiveKernelInfos> SnapshotForReplay() const;
+  size_t Count() const { return infos_.size(); }
+
 
   void AddKernel(Info&& info) {
     infos_.emplace_back(std::move(info));

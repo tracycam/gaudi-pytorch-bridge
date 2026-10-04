@@ -88,6 +88,28 @@ void CollectiveKernelInfos::Launch(
         kernel_info.input_tensor_infos, pt_inputs, pt_outputs, async, done_cb);
   }
 }
+std::shared_ptr<CollectiveKernelInfos>
+CollectiveKernelInfos::SnapshotForReplay() const {
+  auto result = std::make_shared<CollectiveKernelInfos>();
+  auto copy_infos = [](const std::vector<PtTensorInfoShared>& values) {
+    std::vector<PtTensorInfoShared> copy;
+    copy.reserve(values.size());
+    for (const auto& value : values) {
+      copy.push_back(value ? std::make_shared<PtTensorInfo>(*value) : nullptr);
+    }
+    return copy;
+  };
+  for (const auto& info : infos_) {
+    auto kernel = info.kernel ? info.kernel->SnapshotForReplay() : nullptr;
+    if (!kernel) {
+      return nullptr;
+    }
+    result->AddKernel(Info{copy_infos(info.input_tensor_infos),
+                           copy_infos(info.output_tensor_infos), std::move(kernel)});
+  }
+  return result;
+}
+
 void CollectiveKernelInfos::ClearAllPtAndSynTensors() {
   for (const auto& kernel_info : infos_) {
     HABANA_ASSERT(kernel_info.kernel);

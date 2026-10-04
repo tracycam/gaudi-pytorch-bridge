@@ -292,6 +292,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     auto stats = graph.native_replay_stats();
     py::dict result;
     result["commands"] = stats.commands;
+    result["collectives"] = stats.collectives;
+    result["queued_replays"] = stats.queued_replays;
     result["replays"] = stats.replays;
     result["ready"] = stats.ready;
     result["failed"] = stats.failed;
