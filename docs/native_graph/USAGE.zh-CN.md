@@ -1,5 +1,8 @@
 # 使用 bridge 内部编译计划
 
+2026-10-04 已按用户要求暂停。413/503 是已构建的检查点；当前 HEAD 的 profiler
+改动尚未验收。版本区别和未完成事项见 [中场诊断](MIDPOINT-20261004.zh-CN.md)。
+
 这是原 `HPUGraph` 同步重放的内部快路径，应用仍使用 Habana/PyTorch 的公开图 API。
 无需导入 gaudi-kernels 的 Graph runtime 或加载旧 `libe1` 执行 hook。
 

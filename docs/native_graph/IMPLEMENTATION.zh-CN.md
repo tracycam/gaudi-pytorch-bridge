@@ -1,5 +1,8 @@
 # Bridge 内部编译计划与重放实现
 
+最新状态见 [中场诊断与恢复方向](MIDPOINT-20261004.zh-CN.md)：已暂停；503 追加优化
+尚无确定整模型增益，HEAD 的 CPU profiler 改动未验收。本文主体描述 413 核心检查点。
+
 应用继续使用原有 `HPUGraph` / `wrap_in_hpu_graph` API。执行计划是 bridge 的内部对象，
 没有新增 Python 执行器、模型专用重放入口或部署时改源码的脚本。普通路径已完成
 70 层首轮 A/C：B1 约 49 → 75 TPS，仍未达到 90 TPS。

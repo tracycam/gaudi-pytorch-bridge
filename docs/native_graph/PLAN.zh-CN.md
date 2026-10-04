@@ -1,5 +1,9 @@
 # 单一 bridge 原生执行核心：实施计划
 
+最新检查点：[中场诊断](MIDPOINT-20261004.zh-CN.md)；续行方向：
+[Bridge 通用优化](OPTIMIZATION-DIRECTIONS-20261004.zh-CN.md)。下文阶段状态是早期记录，
+完整 70 层现已测得约 49 → 75 TPS，尚未达到 90 TPS。
+
 日期：2026-10-04。状态：**P0构建闭环完成；P2静态计算子集已通过设备检查，P3部分通过，模型目标尚未验收。**
 依据：[FEASIBILITY.zh-CN.md](FEASIBILITY.zh-CN.md)。
 
