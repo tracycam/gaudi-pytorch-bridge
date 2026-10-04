@@ -5,13 +5,15 @@ functionality in PyTorch with minimal code changes.
 
 ## Native execution integration in this fork
 
-This fork is auditing a bridge-owned native execution plan that reuses the
+This fork implements a bridge-owned native execution plan that reuses the
 existing PyTorch interfaces and retires the external experimental executors.
 The [source feasibility audit](docs/native_graph/FEASIBILITY.zh-CN.md) and
 [implementation plan](docs/native_graph/PLAN.zh-CN.md) record the integration
-points, historical measurements, remaining gaps, and acceptance criteria.
-This is a planned implementation, not a completed backend or a new performance
-result. Source/provenance evidence is reproducible with
+points, architectural constraints, remaining gaps, and acceptance criteria.
+A static compute subset has passed device checks and paired replay measurements;
+see the [qualification review](docs/native_graph/REVIEW-20261004.zh-CN.md).
+Collective integration, full lifecycle coverage, and model performance qualification
+remain incomplete. Source/provenance evidence is reproducible with
 `scripts/audit_native_graph_sources.py`; private model assets remain local.
 
 ## Repository Build
