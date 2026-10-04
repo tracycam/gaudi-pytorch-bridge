@@ -3,6 +3,17 @@
 Intel Gaudi PyTorch Bridge consists of several Python packages enabling Intel Gaudi
 functionality in PyTorch with minimal code changes.
 
+## Native execution integration in this fork
+
+This fork is auditing a bridge-owned native execution plan that reuses the
+existing PyTorch interfaces and retires the external experimental executors.
+The [source feasibility audit](docs/native_graph/FEASIBILITY.zh-CN.md) and
+[implementation plan](docs/native_graph/PLAN.zh-CN.md) record the integration
+points, historical measurements, remaining gaps, and acceptance criteria.
+This is a planned implementation, not a completed backend or a new performance
+result. Source/provenance evidence is reproducible with
+`scripts/audit_native_graph_sources.py`; private model assets remain local.
+
 ## Repository Build
 
 This repository can be built as part of the Intel Gaudi software stack or as a standalone project. The instructions in this README focus on the standalone installation using the latest Intel Gaudi software release.

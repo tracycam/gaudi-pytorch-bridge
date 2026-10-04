@@ -1,0 +1,442 @@
+{
+  "schema": 1,
+  "bridge_baseline": "5176b1b2d6865608514e83a2b1fd66459920676e",
+  "scope": "Source audit and historical evidence extraction only; no build, device run or performance prediction",
+  "bridge": [
+    {
+      "file": "python_packages/habana_frameworks/torch/hpu/graphs.py",
+      "sha256": "a43b8a28f1384cbb0de248e538595c1db31088d25100f2475eddfb04dfad77e8",
+      "anchors": {
+        "def wrapped_hpugraph_forward(": [
+          635
+        ],
+        "def input_hash(": [
+          547
+        ],
+        "def copy_to(": [
+          563
+        ]
+      }
+    },
+    {
+      "file": "backend/habana_device/HPUGraph.cpp",
+      "sha256": "f4e0d5596c873af867ebb209490f21c4cf0468017cc32f83f55be959252b27c6",
+      "anchors": {
+        "void HPUGraph::mark_step()": [
+          149
+        ],
+        "void HPUGraph::replay(": [
+          208
+        ],
+        "void SingleHPUGraph::replayGraph(": [
+          488
+        ]
+      }
+    },
+    {
+      "file": "habana_lazy/hpu_lazy_tensors.cpp",
+      "sha256": "5b68d5cea2cf8bca2d988d080c64dd63a36a4ed18053dd1ed491ea2d09f9c622",
+      "anchors": {
+        "void HbLazyTensor::ExecuteCachedGraph(": [
+          1504
+        ]
+      }
+    },
+    {
+      "file": "habana_lazy/hlexec.cpp",
+      "sha256": "7287481e596050560d202419594426d86b2623963eac93b8b2f73afb7ab05ea3",
+      "anchors": {
+        "void HlExec::Launch(": [
+          117,
+          132,
+          190
+        ]
+      }
+    },
+    {
+      "file": "backend/kernel/hpu_habana_cache.cpp",
+      "sha256": "3a5a1c857e31747f88bc682cff013a08bdb5d47dc799730351adc8f503735041",
+      "anchors": {
+        "void RecipeLauncher::Launch(": [
+          1613
+        ]
+      }
+    },
+    {
+      "file": "backend/kernel/hpu_habana_cache.h",
+      "sha256": "ff5cd78801b1461629a8322d25ec47f62d5594066fbe14287722f1bdf37cae7d",
+      "anchors": {
+        "struct RecipeLauncher {": [
+          435
+        ],
+        "struct RecipeHolder {": [
+          487
+        ]
+      }
+    },
+    {
+      "file": "backend/kernel/hpu_habana_launch_op_pt.cpp",
+      "sha256": "62b71c36ac60985bf48b30fa873228ff3b10e78a9f69e2a9bc31c72284b28683",
+      "anchors": {
+        "if (!dry_run_) {": [
+          4537,
+          4997,
+          5118
+        ]
+      }
+    },
+    {
+      "file": "backend/synapse_helpers/graph.cpp",
+      "sha256": "dbc5aae2e453a32098b9c3be01b71a7344503612e8e19df670edf920941ccfb3",
+      "anchors": {
+        "device.lock_addresses": [
+          876
+        ],
+        "synLaunchWithExternalEvents(": [
+          937
+        ]
+      }
+    },
+    {
+      "file": "backend/helpers/collective_kernel_info.cpp",
+      "sha256": "a8204fef6c1cea60f1becccb2311272dfe6b7659b0ad085d4fa16dd9d30bc241",
+      "anchors": {
+        "void CollectiveKernelInfos::Launch(": [
+          76
+        ]
+      }
+    },
+    {
+      "file": "habana_kernels/hccl_kernels.cpp",
+      "sha256": "f769031308476b5ece4955d9718973932299ec543263eedb5c860ab554c8e7ae",
+      "anchors": {
+        "JobThreadLazyHCCL::getInstance()->addJob": [
+          357,
+          472
+        ],
+        "deviceCtxt->lock_address(": [
+          306,
+          418
+        ]
+      }
+    },
+    {
+      "file": "CMakeLists.txt",
+      "sha256": "aa2a873941fe911505b6edee5cc520df687e5af870f7a3e67113585352fb9c96",
+      "anchors": {
+        "cmake_minimum_required(VERSION 4.0": [
+          16
+        ]
+      }
+    },
+    {
+      "file": "backend/CMakeLists.txt",
+      "sha256": "97342c9a15d5a07eec8f75883c2ec3097026937adcce4292aea1af39d2ba763e",
+      "anchors": {
+        "habana_device/HPUGraph.cpp": [
+          51
+        ]
+      }
+    },
+    {
+      "file": ".devops/build.py",
+      "sha256": "4a858f701348da8994888fb8f0357172a26766345cfe3a0f4e3ce2c4289d7b86",
+      "anchors": {
+        "--install-ext": [
+          1451
+        ],
+        "--configure": [
+          1465
+        ],
+        "--release": [
+          1495
+        ]
+      }
+    }
+  ],
+  "kernels": [
+    {
+      "file": "csrc/legacy_executor/e1_replay.cpp",
+      "sha256": "42561891b66cee4c20b5d3cf7035d72cbb47fcf2e0d664d0389b501973ba10e6",
+      "anchors": {
+        "static int enqueue(": [
+          581
+        ],
+        "RECIPE_LAUNCH_SYMBOL": [
+          196,
+          197,
+          202,
+          206
+        ]
+      }
+    },
+    {
+      "file": "csrc/legacy_executor/tensor_hold.cpp",
+      "sha256": "d0bb384b6e6ac490bb6f353b82d6a6144d3deedb26530a38be8a15341a75fac8",
+      "anchors": {
+        "static void keep(": [
+          26
+        ]
+      }
+    },
+    {
+      "file": "csrc/legacy_executor/native_multi.inc",
+      "sha256": "1694ed3569f199d0d2e1d36b44c7c0dc9cc678ba2d9c80a867b4305049a13e9d",
+      "anchors": {
+        "native_multi_step(": [
+          66
+        ]
+      }
+    },
+    {
+      "file": "csrc/native_graph/graph.cpp",
+      "sha256": "8f1893db85dd77d4801208f73d159e86285a6cbdd6d383c7b3bfe66633f8aca3",
+      "anchors": {
+        "gkg_instantiate(": [
+          148
+        ],
+        "gkg_replay(": [
+          177
+        ]
+      }
+    },
+    {
+      "file": "csrc/native_graph/capture.cpp",
+      "sha256": "31359154f92d2d9a27c05359720150ecb3dac1f5210a9164761e850724f6c92e",
+      "anchors": {
+        "multiple host submission threads": [
+          31
+        ],
+        "host I/O must be declared outside capture": [
+          91
+        ]
+      }
+    },
+    {
+      "file": "python/gaudi_kernels/graph.py",
+      "sha256": "cfccad5b8a2ee5e64bf61f89718623640d2b819db880796718923c2a965951c0",
+      "anchors": {
+        "def capture(": [
+          106
+        ],
+        "def replay(": [
+          193
+        ]
+      }
+    },
+    {
+      "file": "python/gaudi_kernels/serving/executor/native_backend.py",
+      "sha256": "5e61e135ca702979227bccfebfca1306dedbac42004c17e3a096fbe4b9c0f515",
+      "anchors": {
+        "original_sample =": [
+          45
+        ],
+        "native.single_rpc": [
+          302,
+          352
+        ]
+      }
+    }
+  ],
+  "historical": [
+    {
+      "case": "production-native-lanes-70-g",
+      "result_sha256": "e5b8157a853159b8fbff2a7b61092c63748bd64e06b9308257a2111094559579",
+      "historical_status": "PASS",
+      "single_rpc": true,
+      "reuse_pages": true,
+      "frozen_executor_commit": "827148e068d1a804e7bed6d906047561695146b5",
+      "frozen_artifacts": [
+        {
+          "file": "native_backend.py",
+          "sha256": "16d8199e14467629e006b4d96db0742d45462e601545d9b2215bd272a29bc5bf",
+          "matches_saved_pin": true
+        },
+        {
+          "file": "native_service_test.py",
+          "sha256": "26a60a33b62d93fdafd1264952e2bcbb543f6e1f5a07be63342b7cfe66dede51",
+          "matches_saved_pin": true
+        },
+        {
+          "file": "e1_replay.cpp",
+          "sha256": "0908b9cbf441ca598a68361d43c3a3627586afedbf07beb6a69269952f596ede",
+          "matches_saved_pin": true
+        },
+        {
+          "file": "native_step.inc",
+          "sha256": "fab3d7b96dcf23cc3d73c36f12e2e29de3d2ceda35f52a0e7788618210ebd73b",
+          "matches_saved_pin": true
+        },
+        {
+          "file": "tensor_hold.cpp",
+          "sha256": "d0bb384b6e6ac490bb6f353b82d6a6144d3deedb26530a38be8a15341a75fac8",
+          "matches_saved_pin": true
+        },
+        {
+          "file": "libe1_replay.so",
+          "sha256": "ba4bbe7f99dee06e91a1fdfe40d092bb1b6505fd13891731a776e229f2a1921f",
+          "matches_saved_pin": true
+        },
+        {
+          "file": "libe1_tensor_hold.so",
+          "sha256": "1b941c734c3898836289c4b524e742c3c32a9c9355e6337f7906457d76130296",
+          "matches_saved_pin": true
+        },
+        {
+          "file": "production-runtime/plugin/vllm_gaudi/v1/worker/hpu_model_runner.py",
+          "sha256": "68c63854a36b7708ab19e0002bf84520fea870a81bba11f21487d99e4516e251",
+          "matches_saved_pin": true
+        }
+      ],
+      "pairs": [
+        {
+          "policy": "bf16_fp32+norm_fp32",
+          "bridge": {
+            "tps": 31.915630814511335,
+            "p50_itl_ms": 25.613806,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 61.4998345863453,
+            "p50_itl_ms": 16.086793,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        },
+        {
+          "policy": "decode_a8_bf16_fp32+gp_fold+gp_scale_tail+down_vec+swa_fp32_av_hoist+qkv_neumaier_isa+qkv_post+f32_ag+router_post_vector+norm_fp32+moe_compact8+moe_sum_bf16+norm_qkv_grid24",
+          "bridge": {
+            "tps": 40.654568032591094,
+            "p50_itl_ms": 22.6836495,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 90.29650913018479,
+            "p50_itl_ms": 11.0215905,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        },
+        {
+          "policy": "decode_a8_bf16_fp32+gp_fold+gp_scale_tail+down_vec+swa_fp32_av_hoist+qkv_neumaier_isa+qkv_post+f32_ag+router_post_vector+norm_fp32+moe_sum_bf16+norm_qkv_grid24+qkv_post_full",
+          "bridge": {
+            "tps": 39.66570091861568,
+            "p50_itl_ms": 23.36435,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 90.95252351673955,
+            "p50_itl_ms": 10.964091499999999,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        },
+        {
+          "policy": "decode_a8_bf16_fp32+gp_fold+gp_scale_tail+down_vec+swa_fp32_av_hoist+qkv_neumaier_isa+qkv_post+f32_ag+router_post_vector+norm_fp32+moe_compact8+moe_sum_bf16+norm_qkv_grid24+qkv_post_full",
+          "bridge": {
+            "tps": 42.01229670318962,
+            "p50_itl_ms": 22.2730695,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 90.57636147572114,
+            "p50_itl_ms": 11.0374935,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        }
+      ]
+    },
+    {
+      "case": "canonical-70-b",
+      "result_sha256": "e9532abfa4a2eef45eb489fa193bff2234347fcf7904fde6cac77763a2e40a23",
+      "historical_status": "PASS",
+      "single_rpc": true,
+      "reuse_pages": true,
+      "frozen_executor_commit": null,
+      "frozen_artifacts": [],
+      "pairs": [
+        {
+          "policy": "bf16_fp32+norm_fp32",
+          "bridge": {
+            "tps": 36.14583518736641,
+            "p50_itl_ms": 22.553772,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 61.192519689857306,
+            "p50_itl_ms": 16.143897000000003,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        },
+        {
+          "policy": "decode_a8_bf16_fp32+gp_fold+gp_scale_tail+down_vec+swa_fp32_av_hoist+qkv_neumaier_isa+qkv_post+f32_ag+router_post_vector+norm_fp32+moe_compact8+moe_sum_bf16+norm_qkv_grid24",
+          "bridge": {
+            "tps": 40.647769562632085,
+            "p50_itl_ms": 23.24154,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 89.8260109116638,
+            "p50_itl_ms": 11.097779,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        },
+        {
+          "policy": "decode_a8_bf16_fp32+gp_fold+gp_scale_tail+down_vec+swa_fp32_av_hoist+qkv_neumaier_isa+qkv_post+f32_ag+router_post_vector+norm_fp32+moe_sum_bf16+norm_qkv_grid24+qkv_post_full",
+          "bridge": {
+            "tps": 43.55227071959734,
+            "p50_itl_ms": 21.007513,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 88.99814096719949,
+            "p50_itl_ms": 11.225554500000001,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        },
+        {
+          "policy": "decode_a8_bf16_fp32+gp_fold+gp_scale_tail+down_vec+swa_fp32_av_hoist+qkv_neumaier_isa+qkv_post+f32_ag+router_post_vector+norm_fp32+moe_compact8+moe_sum_bf16+norm_qkv_grid24+qkv_post_full",
+          "bridge": {
+            "tps": 39.717700399870395,
+            "p50_itl_ms": 24.6580445,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "legacy_native": {
+            "tps": 91.03679678450295,
+            "p50_itl_ms": 10.963272,
+            "steady_steps": 128,
+            "scope": "coordinator wall, includes capture/boundary fallback within the window; no outlier removal"
+          },
+          "token_sequence_equal": true,
+          "scope": "Historical paired arms, not a new controlled bridge-only experiment"
+        }
+      ]
+    }
+  ]
+}
