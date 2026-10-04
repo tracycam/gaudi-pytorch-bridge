@@ -1,6 +1,6 @@
 # 单一 bridge 原生执行核心：实施计划
 
-日期：2026-10-04。状态：**源码审计完成；隔离上游构建进行中，静态计算计划原型已实现但未验收。**
+日期：2026-10-04。状态：**P0构建闭环完成；P2静态计算子集已通过设备检查，P3部分通过，模型目标尚未验收。**
 依据：[FEASIBILITY.zh-CN.md](FEASIBILITY.zh-CN.md)。
 
 ## 目标和不可偷换的验收
@@ -42,7 +42,8 @@ Graph 入口，不依赖外置 `legacy_executor`、`native_graph` 或 LD_PRELOAD
 - 先确认 CMake>=4、匹配的 Torch/C++ ABI、Synapse/HCCL 头文件/库和离线依赖。
 
 验收：可复现 wheel、隔离 import、单卡正常张量与原版 HPU Graph 测试；产物
-SHA和版本可追溯。无此闭环不进行大范围源码迁移。当前：未完成。
+SHA和版本可追溯。无此闭环不进行大范围源码迁移。当前：完成，见
+[RESULTS-20261004.zh-CN.md](RESULTS-20261004.zh-CN.md)。
 
 ### P1：冻结 A/B/C 基线与区域外成本
 
@@ -146,6 +147,7 @@ in-place/out-of-place、空量、图切换、通信错误清理；无外置录�
 
 ## 当前可执行的下一项
 
-**先做P0和P1。** 当前实现状态见 [IMPLEMENTATION.zh-CN.md](IMPLEMENTATION.zh-CN.md)。已完成源码接点与历史结果审计；尚未证明当前机器上的
-构建可复现，也未量化同代码A/C能消除的全部时间。不要在这些事实之前批量搬代码。
+**继续P1、P3与P4。** 当前实现状态见 [IMPLEMENTATION.zh-CN.md](IMPLEMENTATION.zh-CN.md)。
+已完成隔离源码构建和两 recipe 同 API 的配对实验；尚未量化整模型同代码 A/C
+能消除的全部时间。先拆开计算注册与外置执行 hook，再完成输入重绑和通信计划。
 每个阶段用独立Git提交交付，沿用既有最小实验、模型runner与本地资产归档工具。

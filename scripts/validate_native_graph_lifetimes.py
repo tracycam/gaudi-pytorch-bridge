@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normal API checks for stream dependencies, view fallback and async reset."""
+"""Normal API checks for stream dependencies, lowered views and async reset."""
 
 import json
 import os

@@ -1,7 +1,8 @@
 # 首个 bridge 内部执行计划检查点
 
-目标仍是应用不变、只更换 bridge。此检查点是静态计算子集原型，尚未完成
-源码构建、设备验收或模型性能验收，不能据此宣称达到90TPS。
+目标仍是应用不变、只更换 bridge。此检查点的静态计算子集已完成源码构建、
+小图设备验收及配对计时；模型性能验收未完成，不能据此宣称达到90TPS。
+结果见 [RESULTS-20261004.zh-CN.md](RESULTS-20261004.zh-CN.md)。
 
 ## 实现位置
 
@@ -17,7 +18,7 @@ Tensor 租约保存 storage owner、分配器抽象地址、offset、dtype、sha
 每次重放前检查全部租约，提交时重新通过原分配器锁定物理地址，不复用捕获时的
 物理指针。以捕获 stream 执行，并恢复调用者的当前 stream。
 
-目前只接纳静态、连续、无梯度的 HPU Tensor，以及冻结的标量参数。多 stream、
+目前只接纳静态、连续、无梯度的后端 HPU Tensor，以及冻结的标量参数。多个 recipe stream、
 通信、外部事件、DMA 输入、动态 shape、RNG、显式输入重绑、dry-run 和输出释放
 暂不接纳。检查失败发生在提交前，沿用原有行为。提交开始后异常会使计划失效，
 后续任何 replay 入口必须拒绝重跑，避免重复写入。
@@ -32,8 +33,10 @@ Tensor 租约保存 storage owner、分配器抽象地址、offset、dtype、sha
 `build-dependencies.lock.json` 下载并验证，传输后再次校验，交给上游已有的
 `--offline-dependencies-directory`。不要修改依赖查找逻辑或共享 Python 环境。
 
-已安装的官方 wheel 已通过两 recipe FP32/BF16 功能探针；这不代表源码构建通过。
-候选尚未经过功能探针。通信、输入生命周期和模型 A/C 仍需按 PLAN 的 P3–P5 完成。
+未修改上游与候选 wheel 均已从源码构建并隔离安装，通过两 recipe FP32/BF16
+功能探针。跨 stream producer、静态转置/切片、分配器 churn、异步 reset 已通过；
+这两个 view 已在捕获时降低为支持的后端绑定，不代表任意 view/alias 都受支持。
+通信、完整输入重绑/生命周期矩阵和模型 A/C 仍需按 PLAN 的 P3–P5 完成。
 
 ## 应用基线发现
 
