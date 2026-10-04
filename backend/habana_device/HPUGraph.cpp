@@ -242,8 +242,11 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
   } else {
     habana_lazy::HbLazyTensor::StepMarker({});
   }
-  if (native_plan_ && !async && inputs.empty()) {
-    bool bound = native_plan_->stats().ready;
+  if (native_plan_ && (async || !inputs.empty())) {
+    native_plan_->reject("asynchronous or rebound replay requires adapter");
+  }
+  if (native_plan_ && native_plan_->stats().ready) {
+    bool bound = true;
     for (const auto& graph : captured_graphs) {
       for (const auto& input : graph->hblazy_tensors_in_) {
         const auto& data = input.getDataPtr();
@@ -251,6 +254,9 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
             !native_plan_->owns(*data->tensor_data)) {
           bound = false;
         }
+      }
+      if (!bound) {
+        break;
       }
       for (const auto& output : graph->hblazy_tensors_out_) {
         const auto& data = output.getDataPtr();
@@ -264,6 +270,8 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
       if (native_plan_->replay()) {
         return;
       }
+    } else {
+      native_plan_->reject("Lazy tensor binding changed before replay");
     }
   }
   for (size_t i = 0; i < captured_graphs.size(); i++) {
@@ -280,6 +288,9 @@ void HPUGraph::replayV2(
   TORCH_CHECK(
       !native_plan_ || !native_plan_->stats().failed,
       "Native HPUGraph plan failed after submission; reset before replay");
+  if (native_plan_) {
+    native_plan_->reject("replayV2 requires input rebinding adapter");
+  }
   if (capturing_) {
     // if capturing is in progress, replay is not allowed.
     PT_DEVICE_FATAL("GRAPH:: Capture in progress");
@@ -464,6 +475,9 @@ void HPUGraph::replayV3(std::vector<at::Tensor>& inputs, bool async) {
   TORCH_CHECK(
       !native_plan_ || !native_plan_->stats().failed,
       "Native HPUGraph plan failed after submission; reset before replay");
+  if (native_plan_) {
+    native_plan_->reject("replayV3 requires input rebinding adapter");
+  }
   PT_HPUGRAPH_DEBUG(
       "replayV3 with inputs size = ", inputs.size(), " aysnc = ", async);
   if (capturing_) {

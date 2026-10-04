@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <mutex>
+#include <unordered_map>
 #include <utility>
 #include "backend/helpers/collective_kernel_info.h"
 
@@ -43,7 +44,7 @@ struct TensorLease {
         value.storage().unsafeGetStorageImpl() == storage &&
         value.storage().data_ptr().get() == address &&
         value.storage_offset() == offset && value.scalar_type() == dtype &&
-        value.sizes().vec() == sizes && value.strides().vec() == strides;
+        value.sizes().equals(sizes) && value.strides().equals(strides);
   }
 };
 
@@ -99,7 +100,22 @@ struct NativeExecutionPlan::Impl {
   mutable std::recursive_mutex mutex;
   std::vector<RecipeCommand> commands;
   std::vector<TensorLease> leases;
+  std::unordered_multimap<const c10::StorageImpl*, size_t> leases_by_storage;
   NativeReplayStats stats;
+
+  bool owns(const at::Tensor& value) const {
+    if (!value.defined() || !value.has_storage()) {
+      return false;
+    }
+    const auto range = leases_by_storage.equal_range(
+        value.storage().unsafeGetStorageImpl());
+    for (auto it = range.first; it != range.second; ++it) {
+      if (leases[it->second].matches(value)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   bool keep(const habana_torch::jit::IValue& value) {
     if (!value.isTensor()) {
@@ -114,7 +130,11 @@ struct NativeExecutionPlan::Impl {
         tensor.requires_grad() || !tensor.is_contiguous()) {
       return false;
     }
-    leases.emplace_back(tensor);
+    if (!owns(tensor)) {
+      leases_by_storage.emplace(
+          tensor.storage().unsafeGetStorageImpl(), leases.size());
+      leases.emplace_back(tensor);
+    }
     return true;
   }
 };
@@ -132,6 +152,8 @@ void NativeExecutionPlan::reject(std::string reason) {
   // storage. In-flight launches retain their own bridge resource holders.
   impl_->commands.clear();
   impl_->leases.clear();
+  impl_->leases_by_storage.clear();
+  impl_->stats.commands = 0;
 }
 
 void NativeExecutionPlan::append(
@@ -209,9 +231,7 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
 
 bool NativeExecutionPlan::owns(const at::Tensor& tensor) const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  return std::any_of(
-      impl_->leases.begin(), impl_->leases.end(),
-      [&](const TensorLease& lease) { return lease.matches(tensor); });
+  return impl_->owns(tensor);
 }
 
 bool NativeExecutionPlan::replay() {
