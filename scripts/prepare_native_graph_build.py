@@ -100,6 +100,8 @@ def main():
         "PATH": str(venv / "bin") + os.pathsep + env["PATH"],
         "HABANA_SOFTWARE_STACK": str(work),
         "BUILD_ROOT": str(work / "build"),
+        "BUILD_ROOT_RELEASE": str(work / "build-release"),
+        "BUILD_ROOT_DEBUG": str(work / "build-debug"),
         "BUILD_ROOT_LATEST": str(latest),
         "PYTORCH_MODULES_ROOT_PATH": str(source),
         "PYTORCH_MODULES_RELEASE_BUILD": str(work / "build-release"),
@@ -125,7 +127,7 @@ def main():
         dependencies = args.offline_dependencies_directory.resolve(strict=True)
         command.extend(["--offline-dependencies-directory", str(dependencies)])
     explicit = {key: env[key] for key in [
-        "VIRTUAL_ENV", "PATH", "HABANA_SOFTWARE_STACK", "BUILD_ROOT", "BUILD_ROOT_LATEST", "PYTORCH_MODULES_ROOT_PATH",
+        "VIRTUAL_ENV", "PATH", "HABANA_SOFTWARE_STACK", "BUILD_ROOT", "BUILD_ROOT_RELEASE", "BUILD_ROOT_DEBUG", "BUILD_ROOT_LATEST", "PYTORCH_MODULES_ROOT_PATH",
         "PYTORCH_MODULES_RELEASE_BUILD", "PYTORCH_MODULES_DEBUG_BUILD", "SWTOOLS_SDK_ROOT",
         "MEDIA_ROOT", "HCL_INCLUDE_DIR", "SPECS_EXT_ROOT", "SPECS_EMBEDDED_ROOT",
         "SYNAPSE_INCLUDE_DIR", "SYNAPSE_UTILS_INCLUDE_DIR"]}
