@@ -32,6 +32,7 @@
 #include "habana_helpers/logging.h"
 #include "habana_helpers/towl.h"
 #include "habana_lazy/memlog.h"
+#include "habana_lazy/lazy_executor.h"
 #include "habana_serialization/deserializers.h"
 #include "habana_serialization/serializers.h"
 
