@@ -2,6 +2,7 @@
 #include "NativeExecutionPlan.h"
 
 #include <algorithm>
+#include <array>
 #include <mutex>
 #include <utility>
 #include "backend/helpers/collective_kernel_info.h"
@@ -159,7 +160,9 @@ void NativeExecutionPlan::append(
       return;
     }
   }
-  for (const auto* values : {intermediates.get(), &outputs}) {
+  const std::array<const VecOfIValPtrSh*, 2> tensor_lists{
+      intermediates.get(), &outputs};
+  for (const auto* values : tensor_lists) {
     if (!values) {
       continue;
     }
