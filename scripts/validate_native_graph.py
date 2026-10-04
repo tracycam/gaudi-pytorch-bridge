@@ -72,6 +72,10 @@ def main():
                           enqueue_us=(submitted - begin) / 1e3 / args.timing_replays,
                           complete_us=(completed - begin) / 1e3 / args.timing_replays,
                           scope="Two small recipes; not model TPS")
+            if hasattr(_hpu_C, "native_replay_stats"):
+                stats = _hpu_C.native_replay_stats(graph.hpu_graph)
+            if args.require_native and stats.get("replays", 0) != args.iterations + args.timing_replays:
+                raise AssertionError(f"Native timing path fell back: {stats}")
         ht.hpu.synchronize()
         graph.reset()
         records.append(dict(dtype=str(dtype), checks=args.iterations, native=stats,
