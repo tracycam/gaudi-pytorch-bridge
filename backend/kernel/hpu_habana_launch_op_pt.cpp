@@ -25,6 +25,8 @@
 #include "backend/backend_meta.h"
 #include "backend/cache/permute_cache.h"
 #include "backend/habana_device/HPUAllocator.h"
+#include "backend/habana_device/HPUGraph.h"
+#include "backend/habana_device/NativeExecutionPlan.h"
 #include "backend/habana_device/hpu_cached_devices.h"
 #include "backend/habana_device/tensor_builder.h"
 #include "backend/helpers/compilation_statistics.h"
@@ -4534,6 +4536,7 @@ void HabanaLaunchOpPT::ProcessHabanaFusedOpWithDS(
       }
 
       if (!is_pipeline_enabled()) {
+        ExportCapturedExecution(intermediate_tensors_ptr_sh_);
         if (!dry_run_) {
           recipe_launcher_->Launch(
               hpu_stream_,
@@ -4876,6 +4879,28 @@ void HabanaLaunchOpPT::update_syn_launch_info(
 }
 
 // call this function for recipe caching (graph/eager)
+// Export only after compilation/cache patching has resolved launch bindings.
+// RecipeLauncher itself is capture-agnostic, including on retained replay.
+void HabanaLaunchOpPT::ExportCapturedExecution(
+    const std::shared_ptr<VecOfIValPtrSh>& intermediates) {
+  auto* context = habana_lazy::get_device_lazy_execution_context();
+  if (!context || !context->getCapturing()) {
+    return;
+  }
+  auto* graph = context->getCaptureGraph();
+  auto* plan = graph ? graph->native_capture_plan() : nullptr;
+  if (!plan) {
+    return;
+  }
+  if (dry_run_) {
+    plan->reject("dry-run requires deferred plan materialization");
+    return;
+  }
+  plan->append(
+      *recipe_launcher_, hpu_stream_, input_refs_, intermediates, aten_outputs_,
+      syn_launch_info_, external_tensor_info_indexes_, dma_inputs_);
+}
+
 void HabanaLaunchOpPT::ExecuteSynapseCache() {
   PT_BRIDGE_BEGIN;
   if (habana_helpers::IsInferenceMode()) {
@@ -4994,6 +5019,7 @@ void HabanaLaunchOpPT::ExecuteSynapseCache() {
     }
   }
 
+  ExportCapturedExecution(intermediate_tensors_ptr_sh_);
   if (!dry_run_) {
     recipe_launcher_->Launch(
         hpu_stream_,

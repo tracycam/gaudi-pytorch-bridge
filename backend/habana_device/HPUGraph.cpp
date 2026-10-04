@@ -138,6 +138,24 @@ void HPUGraph::capture_end() {
         native_plan_->reject("RNG or explicit input rebinding requires adapter");
       }
     }
+    // Flatten public Lazy boundaries in deterministic slot order. The plan
+    // stores backend leases, not Lazy IR or model-specific metadata.
+    for (const auto& graph : captured_graphs) {
+      for (const auto& input : graph->hblazy_tensors_in_) {
+        const auto& data = input.getDataPtr();
+        if (!data->tensor_data || data->stride_params.has_value() ||
+            !native_plan_->capture_boundary(*data->tensor_data)) {
+          native_plan_->reject("unsupported captured input boundary");
+        }
+      }
+      for (const auto& output : graph->hblazy_tensors_out_) {
+        const auto& data = output.getDataPtr();
+        if (!data->tensor_data ||
+            !native_plan_->capture_boundary(*data->tensor_data)) {
+          native_plan_->reject("unsupported captured output boundary");
+        }
+      }
+    }
     native_plan_->seal(captured_graphs.size());
   }
 
@@ -247,11 +265,12 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
   }
   if (native_plan_ && native_plan_->stats().ready) {
     bool bound = true;
+    size_t boundary_slot = 0;
     for (const auto& graph : captured_graphs) {
       for (const auto& input : graph->hblazy_tensors_in_) {
         const auto& data = input.getDataPtr();
         if (!data->tensor_data || data->stride_params.has_value() ||
-            !native_plan_->owns(*data->tensor_data)) {
+            !native_plan_->matches_boundary(boundary_slot++, *data->tensor_data)) {
           bound = false;
         }
       }
@@ -260,7 +279,7 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
       }
       for (const auto& output : graph->hblazy_tensors_out_) {
         const auto& data = output.getDataPtr();
-        if (!data->tensor_data || !native_plan_->owns(*data->tensor_data)) {
+        if (!data->tensor_data || !native_plan_->matches_boundary(boundary_slot++, *data->tensor_data)) {
           bound = false;
         }
       }

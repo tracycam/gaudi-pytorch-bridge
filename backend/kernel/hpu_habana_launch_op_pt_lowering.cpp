@@ -1022,6 +1022,7 @@ void habana::HabanaLaunchOpPT::ExecuteSynapseGraph() {
     }
   }
 
+  ExportCapturedExecution(intermediate_tensors_ptr);
   if (!dry_run_) {
     recipe_launcher_->Launch(
         hpu_stream_,

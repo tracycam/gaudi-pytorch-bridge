@@ -101,6 +101,7 @@ struct NativeExecutionPlan::Impl {
   std::vector<RecipeCommand> commands;
   std::vector<TensorLease> leases;
   std::unordered_multimap<const c10::StorageImpl*, size_t> leases_by_storage;
+  std::vector<size_t> boundary_leases;
   NativeReplayStats stats;
 
   bool owns(const at::Tensor& value) const {
@@ -153,6 +154,7 @@ void NativeExecutionPlan::reject(std::string reason) {
   impl_->commands.clear();
   impl_->leases.clear();
   impl_->leases_by_storage.clear();
+  impl_->boundary_leases.clear();
   impl_->stats.commands = 0;
 }
 
@@ -229,9 +231,29 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
   }
 }
 
-bool NativeExecutionPlan::owns(const at::Tensor& tensor) const {
+bool NativeExecutionPlan::capture_boundary(const at::Tensor& tensor) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  return impl_->owns(tensor);
+  if (!impl_->stats.reason.empty() || !tensor.defined() ||
+      !tensor.has_storage()) {
+    return false;
+  }
+  const auto range = impl_->leases_by_storage.equal_range(
+      tensor.storage().unsafeGetStorageImpl());
+  for (auto it = range.first; it != range.second; ++it) {
+    if (impl_->leases[it->second].matches(tensor)) {
+      impl_->boundary_leases.push_back(it->second);
+      return true;
+    }
+  }
+  reject("capture boundary has no matching compiled tensor lease");
+  return false;
+}
+
+bool NativeExecutionPlan::matches_boundary(
+    size_t slot, const at::Tensor& tensor) const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  return slot < impl_->boundary_leases.size() &&
+      impl_->leases[impl_->boundary_leases[slot]].matches(tensor);
 }
 
 bool NativeExecutionPlan::replay() {

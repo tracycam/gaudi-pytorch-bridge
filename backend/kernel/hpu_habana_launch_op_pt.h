@@ -325,6 +325,9 @@ class HabanaLaunchOpPT {
   void ExecuteSynapse();
   void ExecuteSynapseGraph();
   void ExecuteSynapseCache();
+  // Capture adapter: export resolved abstract bindings before SDK submission.
+  void ExportCapturedExecution(
+      const std::shared_ptr<VecOfIValPtrSh>& intermediates);
   // To clear the static variables
   void ClearStatics(bool is_shape_inference = false);
   void RemoveDuplicateGraph();

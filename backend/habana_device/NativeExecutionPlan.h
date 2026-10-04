@@ -33,7 +33,9 @@ class NativeExecutionPlan {
       const VecOfIValPtrSh& dma_inputs);
   void reject(std::string reason);
   void seal(size_t subgraphs);
-  bool owns(const at::Tensor& tensor) const;
+  // Record exact boundary slots independently of storage deduplication.
+  bool capture_boundary(const at::Tensor& tensor);
+  bool matches_boundary(size_t slot, const at::Tensor& tensor) const;
   // false means rejection before submission; submission failures throw and
   // poison the plan, so a partially submitted chain can never run twice.
   bool replay();
