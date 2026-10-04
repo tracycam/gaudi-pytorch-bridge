@@ -68,14 +68,14 @@ bool static_recipe(synRecipeHandle recipe) {
     return false;
   }
   std::vector<uint64_t> ids(count);
-  std::vector<synRetrievedLaunchTensorInfoExt> info(count);
+  std::vector<synRetrievedLaunchTensorInfo> info(count);
   if (synTensorRetrieveLaunchIds(recipe, ids.data(), count) != synSuccess) {
     return false;
   }
   for (uint32_t i = 0; i < count; ++i) {
     info[i].tensorId = ids[i];
   }
-  if (synTensorRetrieveLaunchInfoByIdExt(recipe, count, info.data()) !=
+  if (synTensorRetrieveLaunchInfoById(recipe, count, info.data()) !=
       synSuccess) {
     return false;
   }
