@@ -61,6 +61,14 @@ void setup_profiler_sources(
   JsonActivityProfiler::instance()->init_sources(
       bridge, memory, mandatory_events);
 }
+void setup_profiler_sources(
+    bool bridge,
+    bool memory,
+    const std::vector<std::string>& mandatory_events,
+    bool hardware) {
+  JsonActivityProfiler::instance()->init_sources(
+      bridge, memory, mandatory_events, hardware);
+}
 void start_profiler_session() {
   JsonActivityProfiler::instance()->start();
 }

@@ -97,7 +97,10 @@ def register_habana_activity_profiler():
             if debug_activities is not None and DebugActivity.SYNAPSE_FUNCTION_CALLS in debug_activities:
                 logger.warning("DebugActivity.SYNAPSE_FUNCTION_CALLS is no longer supported in bridge")
             mandatory_events = self._get_mandatory_events()
-            hpu_profiler._setup_activity_profiler_sources(bridge_profile, profile_memory, mandatory_events)
+            self.backend_profiling_active = bool(bridge_profile or mandatory_events or self.hpu_profiling_active)
+            hpu_profiler._setup_activity_profiler_sources(
+                bridge_profile, profile_memory, mandatory_events, self.hpu_profiling_active
+            )
 
             super().__init__(
                 activities=activities,
@@ -140,13 +143,13 @@ def register_habana_activity_profiler():
             return mandatory_events
 
         def start_trace(self):
-            if self.hpu_profiling_active:
+            if self.backend_profiling_active:
                 hpu_profiler._start_activity_profiler()
             super().start_trace()
 
         def stop_trace(self):
             super().stop_trace()
-            if self.hpu_profiling_active:
+            if self.backend_profiling_active:
                 hpu_profiler._stop_activity_profiler()
 
     class HabanaProfilerActivity(Enum):

@@ -28,13 +28,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   });
   m.def(
       "_setup_activity_profiler_sources",
-      [](bool bridge, bool memory, std::vector<std::string> mandatory_events) {
+      [](bool bridge, bool memory, std::vector<std::string> mandatory_events,
+         bool hardware) {
         habana::profile::setup_profiler_sources(
-            bridge, memory, mandatory_events);
+            bridge, memory, mandatory_events, hardware);
       },
       pybind11::arg("bridge") = "",
       pybind11::arg("memory") = "",
-      pybind11::arg("mandatory_events") = "");
+      pybind11::arg("mandatory_events") = "",
+      pybind11::arg("hardware") = true);
   m.def(
       "_setup_habana_profiler_configs",
       [](bool bridge) {

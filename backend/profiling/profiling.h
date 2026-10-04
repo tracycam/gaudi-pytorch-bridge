@@ -149,6 +149,11 @@ class Profiler {
       bool bridge,
       bool memory,
       const std::vector<std::string>& mandatory_events);
+  void init_sources(
+      bool bridge,
+      bool memory,
+      const std::vector<std::string>& mandatory_events,
+      bool hardware);
   void start();
   void stop();
 

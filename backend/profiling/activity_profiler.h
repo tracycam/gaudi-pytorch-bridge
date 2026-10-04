@@ -24,6 +24,11 @@ void setup_profiler_sources(
     bool bridge,
     bool memory,
     const std::vector<std::string>& mandatory_events);
+void setup_profiler_sources(
+    bool bridge,
+    bool memory,
+    const std::vector<std::string>& mandatory_events,
+    bool hardware);
 void start_profiler_session();
 void stop_profiler_session();
 void setup_habana_profiler_configs(bool bridge);

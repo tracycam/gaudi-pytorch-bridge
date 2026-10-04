@@ -52,6 +52,14 @@ void Profiler::init_sources(
     bool bridge,
     bool memory,
     const std::vector<std::string>& mandatory_events) {
+  init_sources(bridge, memory, mandatory_events, true);
+}
+
+void Profiler::init_sources(
+    bool bridge,
+    bool memory,
+    const std::vector<std::string>& mandatory_events,
+    bool hardware) {
   // if an object contained this class is static,
   // this function called several time in the same object.
   // Need to avoid logger duplication in the list.
@@ -61,8 +69,10 @@ void Profiler::init_sources(
     trace_sources_.push_back(
         std::make_unique<BridgeLogsSource>(bridge, mandatory_events));
   }
-  trace_sources_.push_back(std::make_unique<SynapseProfilerSource>());
-  if (memory) {
+  if (hardware) {
+    trace_sources_.push_back(std::make_unique<SynapseProfilerSource>());
+  }
+  if (memory && hardware) {
     trace_sources_.push_back(std::make_unique<MemorySource>());
   }
   // simple trace grouping by log category
