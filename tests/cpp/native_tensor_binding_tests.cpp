@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <ATen/ATen.h>
 #include <gtest/gtest.h>
+#include <stdexcept>
+#include <thread>
+#include "habana_kernels/hccl_kernels.h"
 #include "backend/habana_device/RetainedTensorBinding.h"
 
 // Exercise real Storage/TensorImpl mutation on CPU without relying on Lazy
@@ -51,4 +54,33 @@ TEST(NativeTensorBindingTest, OffsetDtypeAndAllocationExtentMatter) {
   EXPECT_FALSE(slot.matches(x.to(at::kDouble)));
   base.resize_({128});
   EXPECT_FALSE(slot.matches(x));
+}
+
+
+TEST(NativeCollectiveSubmissionTest, ExceptionReturnsToCallerAndQueueSurvives) {
+  EXPECT_THROW(
+      habana::SubmitCollectivePlan([] { throw std::runtime_error("probe"); }),
+      std::runtime_error);
+  bool submitted = false;
+  habana::SubmitCollectivePlan([&] { submitted = true; });
+  EXPECT_TRUE(submitted);
+}
+
+TEST(NativeCollectiveSubmissionTest, OneJobKeepsNestedSubmissionOnSameThread) {
+  auto caller = std::this_thread::get_id();
+  std::thread::id submission;
+  std::thread::id nested;
+  int completed = 0;
+  habana::SubmitCollectivePlan([&] {
+    submission = std::this_thread::get_id();
+    ++completed;
+    habana::SubmitCollectivePlan([&] {
+      nested = std::this_thread::get_id();
+      ++completed;
+    });
+    ++completed;
+  });
+  EXPECT_NE(caller, submission);
+  EXPECT_EQ(submission, nested);
+  EXPECT_EQ(completed, 3);
 }
