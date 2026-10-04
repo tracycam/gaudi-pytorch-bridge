@@ -1,8 +1,8 @@
 # Bridge 内部编译计划与重放实现
 
 应用继续使用原有 `HPUGraph` / `wrap_in_hpu_graph` API。执行计划是 bridge 的内部对象，
-没有新增 Python 执行器、模型专用重放入口或部署时改源码的脚本。普通路径尚未完成
-70 层性能验收，不能据小图成绩宣称达到 90 TPS。
+没有新增 Python 执行器、模型专用重放入口或部署时改源码的脚本。普通路径已完成
+70 层首轮 A/C：B1 约 49 → 75 TPS，仍未达到 90 TPS。
 
 ## 捕获：把编译结果交给计划
 
@@ -75,6 +75,9 @@ FP32/BF16 的 M=1/2/8/64/512；输入 adapter、cross-stream、lowered view、ch
 通过，包括 rank0 新路径、rank1 V3 回退。两层 TP8 每 rank 11 条命令、5 个 collective，
 45 次新路径重放；32 个 token 与原 bridge 完全一致。
 
-70 层同应用 A/C 正在执行。分布式在途 communicator 销毁、全异常矩阵、训练/RNG、
+70 层同应用 A/C 首轮完成，B1 约 49 → 75 TPS，B2 聚合约 95 → 119 tokens/s。
+768 个 token / 每臂输出一致，所有 rank 的 B1/B2 图均走原生计划；每图 284 命令、
+141 个 collective。只做一个 fresh-process 对，每臂两轮，不宣称同进程 ABBA。
+重复文本负载不是独立语言质量测试。分布式在途 communicator 销毁、全异常矩阵、训练/RNG、
 动态 shape、正式快速输入重绑和全部模型场景仍欠验收。保留现有外置执行器作为
 对照资产，尚不能宣布弃用。原始日志、失败、wheel 和源码包留在本地私有资产目录。
