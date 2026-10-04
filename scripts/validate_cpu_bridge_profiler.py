@@ -12,6 +12,7 @@ def main():
     args = parser.parse_args()
     import torch
     import habana_frameworks.torch as ht
+    from habana_frameworks.torch import _hpu_C
     from habana_frameworks.torch.activity_profiler.activity_profiler import DebugActivity
     assert not os.getenv('HABANA_PROFILE'), 'CPU-only probe must not enable hardware profiling'
     output = Path(os.environ.get('PROBE_OUT', '.'))
@@ -43,11 +44,11 @@ def main():
                 assert torch.equal(y.cpu(), torch.full((8, 8), 14.))
             profile.export_chrome_trace(str(output/'bridge-replay-cpu.json'))
             events = json.loads((output/'bridge-replay-cpu.json').read_text())['traceEvents']
-            launches = [e for e in events if e.get('name') == 'Launch']
+            launches = [e for e in events if 'Launch' in e.get('name', '')]
             # Bridge source spans use B/E pairs; inspect the actual schema below.
             assert launches, 'CPU profiler did not collect bridge submission-thread calls'
             record.update(bridge_event_count=len(events), launch_events=len(launches),
-                native=ht._hpu_C.native_replay_stats(graph.hpu_graph))
+                native=_hpu_C.native_replay_stats(graph.hpu_graph))
         finally:
             ht.hpu.synchronize()
             graph.reset()
