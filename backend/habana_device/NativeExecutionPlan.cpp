@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "NativeExecutionPlan.h"
+#include "RetainedTensorBinding.h"
 
 #include <algorithm>
 #include <array>
@@ -21,32 +22,6 @@ VecOfIValPtrSh snapshot(const VecOfIValPtrSh& values) {
   return copy;
 }
 
-struct TensorLease {
-  at::Tensor tensor;
-  const c10::StorageImpl* storage;
-  void* address;
-  int64_t offset;
-  at::ScalarType dtype;
-  std::vector<int64_t> sizes;
-  std::vector<int64_t> strides;
-
-  explicit TensorLease(const at::Tensor& value)
-      : tensor(value),
-        storage(value.storage().unsafeGetStorageImpl()),
-        address(value.storage().data_ptr().get()),
-        offset(value.storage_offset()),
-        dtype(value.scalar_type()),
-        sizes(value.sizes().vec()),
-        strides(value.strides().vec()) {}
-
-  bool matches(const at::Tensor& value) const {
-    return value.defined() && value.has_storage() &&
-        value.storage().unsafeGetStorageImpl() == storage &&
-        value.storage().data_ptr().get() == address &&
-        value.storage_offset() == offset && value.scalar_type() == dtype &&
-        value.sizes().equals(sizes) && value.strides().equals(strides);
-  }
-};
 
 struct RecipeCommand {
   std::shared_ptr<habana::RecipeLauncher> launcher;
@@ -99,7 +74,7 @@ bool static_recipe(synRecipeHandle recipe) {
 struct NativeExecutionPlan::Impl {
   mutable std::recursive_mutex mutex;
   std::vector<RecipeCommand> commands;
-  std::vector<TensorLease> leases;
+  std::vector<RetainedTensorBinding> leases;
   std::unordered_multimap<const c10::StorageImpl*, size_t> leases_by_storage;
   std::vector<size_t> boundary_leases;
   NativeReplayStats stats;

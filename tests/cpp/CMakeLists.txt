@@ -29,6 +29,7 @@ add_habana_library(
   OBJECT
   $<$<TARGET_EXISTS:npu::specs_embedded>:mem_hlml_tests.cpp>
   acc_thread_pool_tests.cpp
+  native_tensor_binding_tests.cpp
   common_functions_helpers.cpp
   common_functions_norm_kernel_tests.cpp
   compute_shapes.cpp
