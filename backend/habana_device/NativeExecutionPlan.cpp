@@ -128,6 +128,10 @@ void NativeExecutionPlan::reject(std::string reason) {
     impl_->stats.reason = std::move(reason);
   }
   impl_->stats.ready = false;
+  // A rejected plan must not pin an unused copy of the graph's activation
+  // storage. In-flight launches retain their own bridge resource holders.
+  impl_->commands.clear();
+  impl_->leases.clear();
 }
 
 void NativeExecutionPlan::append(
