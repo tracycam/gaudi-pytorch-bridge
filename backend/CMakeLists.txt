@@ -49,6 +49,7 @@ add_habana_library(
   habana_device/HPUEvent.cpp
   habana_device/HPUDevice.cpp
   habana_device/HPUGraph.cpp
+  habana_device/NativeExecutionPlan.cpp
   habana_device/HPUHooksInterface.cpp
   habana_device/HPUStream.cpp
   habana_device/PinnedMemoryAllocator.cpp

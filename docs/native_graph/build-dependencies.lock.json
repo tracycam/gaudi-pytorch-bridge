@@ -1,0 +1,63 @@
+[
+  {
+    "name": "exprtk",
+    "repository": "ArashPartow/exprtk",
+    "tag": "0.0.3-cmake",
+    "commit": "ca58bbd8bcf1165dbe20268e91ccfd2d0e18e5dc",
+    "url": "https://codeload.github.com/ArashPartow/exprtk/tar.gz/ca58bbd8bcf1165dbe20268e91ccfd2d0e18e5dc",
+    "archive_sha256": "88d6b6d31d74b585ac564c8c63ce67bba9504f27b2a38a7804bed5b0b9c96670"
+  },
+  {
+    "name": "xxhash",
+    "repository": "Cyan4973/xxHash",
+    "tag": "v0.8.3",
+    "commit": "e626a72bc2321cd320e953a0ccf1584cad60f363",
+    "url": "https://codeload.github.com/Cyan4973/xxHash/tar.gz/e626a72bc2321cd320e953a0ccf1584cad60f363",
+    "archive_sha256": "34e71c085636fbc1726482996d92719d0a16e6a6097970ecf2990a27b3821162"
+  },
+  {
+    "name": "nlohmann_json",
+    "repository": "nlohmann/json",
+    "tag": "v3.12.0",
+    "commit": "55f93686c01528224f448c19128836e7df245f72",
+    "url": "https://codeload.github.com/nlohmann/json/tar.gz/55f93686c01528224f448c19128836e7df245f72",
+    "archive_sha256": "67f4cdd9ca930c9c1e130af4a437c7fc98fab77a2846fc2d2a14b4943831f8ef"
+  },
+  {
+    "name": "fmt",
+    "repository": "fmtlib/fmt",
+    "tag": "9.1.0",
+    "commit": "a33701196adfad74917046096bf5a2aa0ab0bb50",
+    "url": "https://codeload.github.com/fmtlib/fmt/tar.gz/a33701196adfad74917046096bf5a2aa0ab0bb50",
+    "archive_sha256": "e166f622392d1a739121e450f3bbbcda3ec94ee67fcb042b660e7926af89590a"
+  },
+  {
+    "name": "magic_enum",
+    "repository": "Neargye/magic_enum",
+    "tag": "v0.9.7",
+    "commit": "e046b69a3736d314fad813e159b1c192eaef92cd",
+    "url": "https://codeload.github.com/Neargye/magic_enum/tar.gz/e046b69a3736d314fad813e159b1c192eaef92cd",
+    "archive_sha256": "a06b11989a7802de62a405c373b23c3fcc4caca27e0a0df5f9905bc322a14a40"
+  },
+  {
+    "name": "abseil-cpp",
+    "repository": "abseil/abseil-cpp",
+    "tag": "20250512.1",
+    "commit": "76bb24329e8bf5f39704eb10d21b9a80befa7c81",
+    "url": "https://codeload.github.com/abseil/abseil-cpp/tar.gz/76bb24329e8bf5f39704eb10d21b9a80befa7c81",
+    "archive_sha256": "ed8f7d9f39139c449e79fd19765e23c96fdb774172d32d191323d3e3ea06e5ff"
+  },
+  {
+    "name": "googletest",
+    "repository": "google/googletest",
+    "tag": "v1.17.0",
+    "commit": "52eb8108c5bdec04579160ae17225d66034bd723",
+    "url": "https://codeload.github.com/google/googletest/tar.gz/52eb8108c5bdec04579160ae17225d66034bd723",
+    "archive_sha256": "745c55415660044610f7fcd3af7a6420d5de16a7dbb9ebfe2e131275676232be"
+  },
+  {
+    "name": "devscripts",
+    "url": "https://snapshot.debian.org/archive/debian/20250412T205410Z/pool/main/d/devscripts/devscripts_2.25.9.tar.xz",
+    "archive_sha256": "e9664c0c5486d0a06a792b610039ebaa2ef2e8fdd25b8ec03518da6acff3d65a"
+  }
+]

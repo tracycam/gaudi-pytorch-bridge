@@ -21,6 +21,9 @@
 
 namespace at::hpu {
 
+class NativeExecutionPlan;
+struct NativeReplayStats;
+
 struct SingleHPUGraph {
   SingleHPUGraph(
       std::shared_ptr<habana::RecipeArgumentSpec> cached_rarg_psh,
@@ -139,6 +142,8 @@ struct HPUGraph {
       bool free_inplace = true);
   void mark_user_inputs(std::vector<at::Tensor>& static_inputs);
   void destroy();
+  NativeExecutionPlan* native_capture_plan();
+  NativeReplayStats native_replay_stats() const;
   std::unordered_set<size_t> get_user_input_match_indices() {
     return user_input_match_indices_;
   }
@@ -154,6 +159,7 @@ struct HPUGraph {
   std::unordered_set<size_t> user_input_match_indices_;
   // tensors that are input as well as intermediate outputs
   std::vector<habana_lazy::HbLazyTensor> hblazy_tensors_in_out_;
+  std::unique_ptr<NativeExecutionPlan> native_plan_;
 };
 
 } // namespace at::hpu

@@ -14,6 +14,8 @@
  */
 
 #include "backend/kernel/hpu_habana_cache.h"
+#include "backend/habana_device/HPUGraph.h"
+#include "backend/habana_device/NativeExecutionPlan.h"
 #include <algorithm>
 #include "backend/backend_meta.h"
 #include "backend/helpers/collective_kernel_info.h"
@@ -1618,6 +1620,17 @@ void RecipeLauncher::Launch(
     std::vector<synLaunchTensorInfo>& syn_launch_info,
     std::vector<size_t>& external_tensor_info_indexes,
     const VecOfIValPtrSh& dma_inputs) {
+  auto* lazy_context = habana_lazy::get_device_lazy_execution_context();
+  if (lazy_context->getCapturing()) {
+    if (auto* graph = lazy_context->getCaptureGraph()) {
+      if (auto* plan = graph->native_capture_plan()) {
+        plan->append(
+            *this, hpu_stream, input_refs, intermediate_tensors_ptr,
+            aten_outputs, syn_launch_info, external_tensor_info_indexes,
+            dma_inputs);
+      }
+    }
+  }
   PT_BRIDGE_BEGIN_WITH_INDEX(debug_id_);
   MaybePrintDebugInfo(
       input_refs, intermediate_tensors_ptr, aten_outputs, *this);

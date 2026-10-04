@@ -26,6 +26,7 @@
 #include "backend/habana_device/HPUAllocator.h"
 #include "backend/habana_device/HPUDevice.h"
 #include "backend/habana_device/HPUGraph.h"
+#include "backend/habana_device/NativeExecutionPlan.h"
 #include "backend/habana_device/HPUGuardImpl.h"
 #include "backend/habana_device/hpu_cached_devices.h"
 #include "backend/helpers/dynamic_shape_info.h"
@@ -287,6 +288,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     return hash;
   });
   py::class_<at::hpu::HPUGraph>(m, "HPUGraph").def(pybind11::init());
+  m.def("native_replay_stats", [](at::hpu::HPUGraph& graph) {
+    auto stats = graph.native_replay_stats();
+    py::dict result;
+    result["commands"] = stats.commands;
+    result["replays"] = stats.replays;
+    result["ready"] = stats.ready;
+    result["failed"] = stats.failed;
+    result["reason"] = stats.reason;
+    return result;
+  });
   m.def(
       "capture_begin", [](at::hpu::HPUGraph& graph) { graph.capture_begin(); });
   m.def("capture_begin", [](at::hpu::HPUGraph& graph, bool dry_run) {

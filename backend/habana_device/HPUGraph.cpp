@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 #include "HPUGraph.h"
+#include "NativeExecutionPlan.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -28,6 +29,7 @@
 #include <vector>
 
 #include <ATen/core/Tensor.h>
+#include <c10/core/StreamGuard.h>
 
 #include "backend/backend_meta.h"
 #include "backend/habana_device/HPUStream.h"
@@ -69,6 +71,10 @@ void HPUGraph::capture_begin(bool dry_run) {
   /*flush current Accumulated graph, before capture */
   PT_IRGRAPH_DEBUG("step marker due to new HPUGraph::capture_begin");
   habana_lazy::HbLazyTensor::StepMarker({});
+  native_plan_ = std::make_unique<NativeExecutionPlan>();
+  if (dry_run) {
+    native_plan_->reject("dry-run requires deferred plan materialization");
+  }
 
   dynamic_env_ = habana_helpers::GetRefineDynamicShapeStatus();
   if (dynamic_env_) {
@@ -125,6 +131,15 @@ void HPUGraph::capture_end() {
 
   // Clear the user marked inputs list
   context->ClearHPUGraphUserMarkedInputs();
+  if (native_plan_) {
+    for (const auto& graph : captured_graphs) {
+      if (!graph->seed_tensors_generator_.empty() ||
+          !graph->user_input_indices_.empty()) {
+        native_plan_->reject("RNG or explicit input rebinding requires adapter");
+      }
+    }
+    native_plan_->seal(captured_graphs.size());
+  }
 
   // Not enabling DS back once HPU graph detected
   /*if (dynamic_env_) {
@@ -136,6 +151,7 @@ void HPUGraph::destroy() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   // Clear all captured SingleHpuGraphs
   captured_graphs.clear();
+  native_plan_.reset();
 
   habana_lazy::HbExecutionContext* context =
       habana_lazy::get_device_lazy_execution_context();
@@ -196,6 +212,9 @@ void HPUGraph::mark_step() {
  then x can only be deleted after the forward function has run completely
  and user doesn't need the tensor anymore */
 void HPUGraph::clear_inputs() {
+  if (native_plan_) {
+    native_plan_->reject("input lease release requested");
+  }
   // call synchronize before this API
   for (auto out_tensor : hblazy_tensors_in_out_) {
     PT_HPUGRAPH_DEBUG(
@@ -208,6 +227,9 @@ void HPUGraph::clear_inputs() {
 void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  TORCH_CHECK(
+      !native_plan_ || !native_plan_->stats().failed,
+      "Native HPUGraph plan failed after submission; reset before replay");
   if (capturing_) {
     // if capturing is in progress, replay is not allowed.
     PT_DEVICE_FATAL("GRAPH:: Capture in progress");
@@ -220,6 +242,30 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
   } else {
     habana_lazy::HbLazyTensor::StepMarker({});
   }
+  if (native_plan_ && !async && inputs.empty()) {
+    bool bound = native_plan_->stats().ready;
+    for (const auto& graph : captured_graphs) {
+      for (const auto& input : graph->hblazy_tensors_in_) {
+        const auto& data = input.getDataPtr();
+        if (!data->tensor_data || data->stride_params.has_value() ||
+            !native_plan_->owns(*data->tensor_data)) {
+          bound = false;
+        }
+      }
+      for (const auto& output : graph->hblazy_tensors_out_) {
+        const auto& data = output.getDataPtr();
+        if (!data->tensor_data || !native_plan_->owns(*data->tensor_data)) {
+          bound = false;
+        }
+      }
+    }
+    if (bound) {
+      c10::StreamGuard stream_guard(capture_stream_.unwrap());
+      if (native_plan_->replay()) {
+        return;
+      }
+    }
+  }
   for (size_t i = 0; i < captured_graphs.size(); i++) {
     captured_graphs[i]->replay(inputs, async);
   }
@@ -231,6 +277,9 @@ void HPUGraph::replayV2(
     bool async) {
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  TORCH_CHECK(
+      !native_plan_ || !native_plan_->stats().failed,
+      "Native HPUGraph plan failed after submission; reset before replay");
   if (capturing_) {
     // if capturing is in progress, replay is not allowed.
     PT_DEVICE_FATAL("GRAPH:: Capture in progress");
@@ -286,6 +335,9 @@ void HPUGraph::mark_user_outputs(
     bool free_inplace) {
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (native_plan_) {
+    native_plan_->reject("output lease rewriting requires adapter");
+  }
   PT_HPUGRAPH_DEBUG("mark_user_outputs with outputs size = ", outputs.size());
   if (capturing_) {
     // if capturing is in progress, replay is not allowed.
@@ -409,6 +461,9 @@ void HPUGraph::mark_user_outputs(
 void HPUGraph::replayV3(std::vector<at::Tensor>& inputs, bool async) {
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  TORCH_CHECK(
+      !native_plan_ || !native_plan_->stats().failed,
+      "Native HPUGraph plan failed after submission; reset before replay");
   PT_HPUGRAPH_DEBUG(
       "replayV3 with inputs size = ", inputs.size(), " aysnc = ", async);
   if (capturing_) {
@@ -472,6 +527,14 @@ HPUGraph::~HPUGraph() {
     context->setCapturing(false);
     context->setCaptureGraph(nullptr);
   }
+}
+
+NativeExecutionPlan* HPUGraph::native_capture_plan() {
+  return capturing_ ? native_plan_.get() : nullptr;
+}
+
+NativeReplayStats HPUGraph::native_replay_stats() const {
+  return native_plan_ ? native_plan_->stats() : NativeReplayStats{};
 }
 
 SingleHPUGraph::~SingleHPUGraph() {

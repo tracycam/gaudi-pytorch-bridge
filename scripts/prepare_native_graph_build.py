@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--torch-site", type=Path, required=True)
     parser.add_argument("--media-version", default="1.24.1.482")
+    parser.add_argument("--offline-dependencies-directory", type=Path)
     parser.add_argument("--jobs", type=int, default=32)
     args = parser.parse_args()
     work, source, torch_site = (p.resolve() for p in (args.work, args.source, args.torch_site))
@@ -111,6 +112,9 @@ def main():
     command = [str(python), str(source / ".devops/build.py"), "-cr", "--no-iwyu",
                "--pt-versions", "preinstalled", "--recreate-venv", "never",
                "-j", str(args.jobs)]
+    if args.offline_dependencies_directory is not None:
+        dependencies = args.offline_dependencies_directory.resolve(strict=True)
+        command.extend(["--offline-dependencies-directory", str(dependencies)])
     explicit = {key: env[key] for key in [
         "VIRTUAL_ENV", "PATH", "HABANA_SOFTWARE_STACK", "BUILD_ROOT", "BUILD_ROOT_LATEST", "PYTORCH_MODULES_ROOT_PATH",
         "PYTORCH_MODULES_RELEASE_BUILD", "PYTORCH_MODULES_DEBUG_BUILD", "SWTOOLS_SDK_ROOT",
