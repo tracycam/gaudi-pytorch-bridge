@@ -221,8 +221,18 @@ def register_habana_light_activity_profiler():
             acc_events: bool | None = None,
             use_cuda: bool | None = None,
         ):
+            if activities is not None:
+                activities = tuple(activities)
             bridge_profile = debug_activities is not None and DebugActivity.BRIDGE_FUNCTION_CALLS in debug_activities
             hpu_profiler._setup_habana_profiler_configs(bridge_profile)
+            # Kineto starts HPU sources only when an HPU activity is requested.
+            # CPU-only bridge debugging still needs its existing log source,
+            # without constructing or starting a hardware profiler.
+            self.cpu_bridge_profiling_active = bridge_profile and activities is not None and set(activities) == {
+                torch.profiler.ProfilerActivity.CPU
+            }
+            if self.cpu_bridge_profiling_active:
+                hpu_profiler._setup_activity_profiler_sources(True, False, [], False)
 
             super().__init__(
                 activities=activities,
@@ -238,6 +248,16 @@ def register_habana_light_activity_profiler():
                 acc_events=acc_events,
                 use_cuda=use_cuda,
             )
+
+        def start_trace(self):
+            if self.cpu_bridge_profiling_active:
+                hpu_profiler._start_activity_profiler()
+            super().start_trace()
+
+        def stop_trace(self):
+            super().stop_trace()
+            if self.cpu_bridge_profiling_active:
+                hpu_profiler._stop_activity_profiler()
 
     torch.profiler.profile = habana_profile_light_wrapper
     torch.autograd.profiler.profile = habana_autograd_profile_wrapper
