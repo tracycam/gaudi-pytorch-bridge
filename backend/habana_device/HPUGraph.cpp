@@ -45,6 +45,20 @@
 
 namespace at::hpu {
 
+namespace {
+void ValidateMarkedInputs(
+    const std::vector<std::vector<int64_t>>& sizes,
+    const std::vector<at::Tensor>& inputs) {
+  TORCH_CHECK(inputs.size() >= sizes.size(),
+              "HPUGraph replay requires all marked inputs; expected ",
+              sizes.size(), ", got ", inputs.size());
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    TORCH_CHECK(inputs[i].defined() && inputs[i].sizes().equals(sizes[i]),
+                "HPUGraph marked input shape changed at slot ", i);
+  }
+}
+} // namespace
+
 template <typename T>
 inline bool isExists(
     const std::unordered_set<T>& setContainer,
@@ -169,6 +183,10 @@ void HPUGraph::destroy() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   // Clear all captured SingleHpuGraphs
   captured_graphs.clear();
+  user_input_sizes_.clear();
+  user_input_match_indices_.clear();
+  hblazy_tensors_in_out_.clear();
+  capturing_ = false;
   native_plan_.reset();
 
   habana_lazy::HbExecutionContext* context =
@@ -254,6 +272,7 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
     return;
   }
 
+  ValidateMarkedInputs(user_input_sizes_, inputs);
   PT_IRGRAPH_DEBUG("step marker due to HPUGraph::replay");
   if (async && GET_ENV_FLAG_NEW(PT_HPU_ENABLE_HPUGRAPH_THREAD)) {
     habana_lazy::HbLazyTensor::StepMarker({}, nullptr, {}, true);
@@ -505,6 +524,7 @@ void HPUGraph::replayV3(std::vector<at::Tensor>& inputs, bool async) {
     return;
   }
 
+  ValidateMarkedInputs(user_input_sizes_, inputs);
   PT_IRGRAPH_DEBUG("step marker due to HPUGraph::replayV3");
   if (async && GET_ENV_FLAG_NEW(PT_HPU_ENABLE_HPUGRAPH_THREAD)) {
     habana_lazy::HbLazyTensor::StepMarker({}, nullptr, {}, true);
@@ -514,15 +534,6 @@ void HPUGraph::replayV3(std::vector<at::Tensor>& inputs, bool async) {
 
   if (captured_graphs.empty()) {
     return;
-  }
-
-  size_t index = 0;
-  // If user called mark_user_inputs, then check if sizes in replay are same.
-  for (const auto& user_input_size : user_input_sizes_) {
-    if (user_input_size != inputs.at(index++).sizes().vec()) {
-      PT_DEVICE_FATAL(
-          "HPU GRAPH:: Mark User Input Sizes is not same Replay Input Sizes");
-    }
   }
 
   PT_HPUGRAPH_DEBUG("Total Number Of Captured Graph: ", captured_graphs.size());
@@ -687,18 +698,9 @@ void SingleHPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
     return;
   }
 
-  if (!have_cached_h2d_scales_check_) {
-    is_h2d_scales_enabled_ = habana_helpers::is_h2d_scales_enabled() &&
-        std::any_of(inputs.begin(), inputs.end(), [](const at::Tensor& t) {
-                               return t.is_cpu();
-                             });
-    have_cached_h2d_scales_check_ = true;
-  }
-
-  if (is_h2d_scales_enabled_) {
-    replayV3(inputs, async);
-    return;
-  }
+  // Reuse the existing binding adapter for both HPU and CPU scale tensors.
+  // The previous H2D-only condition silently skipped HPU-input execution.
+  replayV3(inputs, async);
 }
 
 void SingleHPUGraph::replayV3(std::vector<at::Tensor>& inputs, bool async) {
