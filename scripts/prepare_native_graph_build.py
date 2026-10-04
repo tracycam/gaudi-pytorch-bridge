@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -109,6 +110,14 @@ def main():
             "HCL_INCLUDE_DIR", "SPECS_EXT_ROOT", "SPECS_EMBEDDED_ROOT",
             "SYNAPSE_INCLUDE_DIR", "SYNAPSE_UTILS_INCLUDE_DIR"]},
     })
+    tools = {}
+    for name in ("git", "cmake", "ninja", "c++", "protoc"):
+        executable = shutil.which(name, path=env["PATH"])
+        if executable is None:
+            raise RuntimeError(f"Required build tool missing: {name}; prepare it in the isolated toolchain")
+        version = subprocess.check_output([executable, "--version"], env=env,
+                                          text=True, stderr=subprocess.STDOUT)
+        tools[name] = dict(path=executable, version=version.splitlines()[0])
     command = [str(python), str(source / ".devops/build.py"), "-cr", "--no-iwyu",
                "--pt-versions", "preinstalled", "--recreate-venv", "never",
                "-j", str(args.jobs)]
@@ -123,7 +132,7 @@ def main():
     for key in ("GIT_EXEC_PATH", "GIT_TEMPLATE_DIR"):
         if key in env:
             explicit[key] = env[key]
-    metadata = dict(command=command, environment=explicit,
+    metadata = dict(command=command, environment=explicit, tools=tools,
                     media=dict(url=url, sha256=expected), requirements_sha256=sha(source / "requirements.txt"),
                     retained_torch_site=str(torch_site))
     (work / "build-config.json").write_text(json.dumps(metadata, indent=2) + "\n")
