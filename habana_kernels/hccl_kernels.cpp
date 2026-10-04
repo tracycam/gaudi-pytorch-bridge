@@ -181,7 +181,8 @@ void collective(
     bool async,
     synapse_helpers::event_done_callback done_cb,
     Fn fn,
-    bool inline_submission = false) {
+    bool inline_submission = false,
+    std::shared_ptr<HcclCommunicator> retained_communicator = {}) {
   for (size_t i = 0; i < inputs.size(); ++i) {
     HABANA_ASSERT(
         devices.at(i) == 0,
@@ -209,7 +210,8 @@ void collective(
         }
       }
     }
-    auto comm = HcclCommunicator::Get(communicator_ids.at(i));
+    auto comm = retained_communicator ? retained_communicator
+                                     : HcclCommunicator::Get(communicator_ids.at(i));
     auto deviceCtxt = comm->getDeviceCtxt();
     synStreamHandle collective_stream = comm->getCommStream();
 
@@ -246,8 +248,12 @@ void collective(
     }
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
     auto func = [fn = fn,
-                 input = std::make_shared<PtTensorInfo>(*inputs.at(i)),
-                 output = std::make_shared<PtTensorInfo>(*outputs.at(i)),
+                 input = inline_submission
+                     ? inputs.at(i)
+                     : std::make_shared<PtTensorInfo>(*inputs.at(i)),
+                 output = inline_submission
+                     ? outputs.at(i)
+                     : std::make_shared<PtTensorInfo>(*outputs.at(i)),
                  in_tensor = std::move(in_tensor),
                  out_tensor = std::move(out_tensor),
                  comm = comm,
@@ -257,7 +263,8 @@ void collective(
                  deviceCtxt = deviceCtxt,
                  event_lists = event_lists,
                  output_storage_ptr = output_storage_ptr,
-                 pr = pr]() mutable {
+                 pr = pr,
+                 inline_submission]() mutable {
       PT_LAZY_DEBUG(
           "Collective call. input = ",
           *input,
@@ -317,6 +324,7 @@ void collective(
           reinterpret_cast<void*>(resource_holder->get_address_lock()->at(1));
       HABANA_ASSERT(output_address != nullptr, "output_address is null");
 
+      auto completion_communicator = inline_submission ? comm : nullptr;
       hcclResult_t hccl_result =
           fn(input,
              output,
@@ -330,10 +338,12 @@ void collective(
       deviceCtxt->submit_events(
           collective_stream,
           output_storage_ptr,
-          [resource_holder, &recipe_counter, done_cb]() mutable {
+          [resource_holder, &recipe_counter, done_cb,
+           completion_communicator = std::move(completion_communicator)]() mutable {
             resource_holder.reset();
             recipe_counter.decrease_and_notify();
             done_cb();
+            completion_communicator.reset();
           });
       if (pr) {
         pr->set_value(hccl_result == hcclSuccess);
@@ -514,6 +524,9 @@ HcclAllreduceOperator::SnapshotForReplay() const {
   copy->comm_id_ = comm_id_;
   copy->inline_submission_ = true;
   copy->replay_communicator_ = HcclCommunicator::Get(comm_id_);
+  if (!copy->replay_communicator_) {
+    return nullptr;
+  }
   return copy;
 }
 
@@ -526,6 +539,9 @@ HcclAllgatherOutOperator::SnapshotForReplay() const {
   copy->comm_id_ = comm_id_;
   copy->inline_submission_ = true;
   copy->replay_communicator_ = HcclCommunicator::Get(comm_id_);
+  if (!copy->replay_communicator_) {
+    return nullptr;
+  }
   return copy;
 }
 
@@ -670,7 +686,7 @@ void HcclAllreduceOperator::RunCollective(
         }
         return hccl_result;
       },
-      inline_submission_);
+      inline_submission_, replay_communicator_);
 }
 
 void HcclReduceOperator::AllocateAndAddSynapseNode(
@@ -987,7 +1003,7 @@ void HcclAllgatherOutOperator::RunCollective(
             stream);
         return hccl_result;
       },
-      inline_submission_);
+      inline_submission_, replay_communicator_);
 }
 
 void HcclReduceScatterOutOperator::AllocateAndAddSynapseNode(

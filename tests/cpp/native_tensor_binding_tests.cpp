@@ -5,6 +5,7 @@
 #include <thread>
 #include "habana_kernels/hccl_kernels.h"
 #include "backend/habana_device/RetainedTensorBinding.h"
+#include "backend/kernel/hpu_habana_cache.h"
 
 // Exercise real Storage/TensorImpl mutation on CPU without relying on Lazy
 // set_, which the pinned HPU bridge does not support. The binding contract is
@@ -83,4 +84,49 @@ TEST(NativeCollectiveSubmissionTest, OneJobKeepsNestedSubmissionOnSameThread) {
   EXPECT_NE(caller, submission);
   EXPECT_EQ(submission, nested);
   EXPECT_EQ(completed, 3);
+}
+
+TEST(PreparedTensorBindingsTest, PreservesReferencesDependenciesAndIndependentOwners) {
+  auto x = at::ones({8, 8});
+  auto middle = at::ones({8, 8});
+  auto output = at::zeros({8, 8});
+  auto original_owner = x.storage();
+  auto input_address = reinterpret_cast<uint64_t>(x.storage().data_ptr().get());
+  auto output_address = reinterpret_cast<uint64_t>(output.storage().data_ptr().get());
+  habana::RecipeValueSpec recipe;
+  habana::RecipeLauncher launcher(recipe);
+  std::vector<habana_torch::jit::IValue> inputs{x, int64_t{7}};
+  auto intermediates = std::make_shared<VecOfIValPtrSh>();
+  intermediates->push_back(std::make_shared<habana_torch::jit::IValue>(middle));
+  VecOfIValPtrSh outputs{std::make_shared<habana_torch::jit::IValue>(output)};
+  synLaunchTensorInfo external{};
+  external.pTensorAddress = input_address;
+  launcher.PrepareTensorBindings(inputs, intermediates, outputs, {external}, {0});
+  auto prepared = launcher.prepared_bindings_;
+  ASSERT_EQ(prepared->inputs.size(), 2);
+  ASSERT_EQ(prepared->outputs.size(), 1);
+  ASSERT_EQ(prepared->storage_owners.size(), 3);
+  EXPECT_EQ(prepared->reads, std::vector<uint64_t>{input_address});
+  EXPECT_EQ(prepared->producers, std::vector<uint64_t>{output_address});
+  x.set_(at::zeros({8, 8}));
+  EXPECT_EQ(prepared->storage_owners.front().unsafeGetStorageImpl(),
+            original_owner.unsafeGetStorageImpl());
+  EXPECT_NE(prepared->inputs.front().storage().unsafeGetStorageImpl(),
+            original_owner.unsafeGetStorageImpl());
+  // A completion resource can outlive the launcher/plan owner.
+  launcher.prepared_bindings_.reset();
+  EXPECT_EQ(prepared->reads.front(), input_address);
+}
+
+TEST(PreparedTensorBindingsTest, ExternalAliasKeepsEntryWaitButUsesExternalProducerEvent) {
+  auto x = at::ones({8});
+  habana::RecipeValueSpec recipe;
+  habana::RecipeLauncher launcher(recipe);
+  std::vector<habana_torch::jit::IValue> inputs{x};
+  VecOfIValPtrSh outputs{std::make_shared<habana_torch::jit::IValue>(x)};
+  synLaunchTensorInfo external{};
+  external.pTensorAddress = reinterpret_cast<uint64_t>(x.storage().data_ptr().get());
+  launcher.PrepareTensorBindings(inputs, {}, outputs, {external}, {0});
+  EXPECT_EQ(launcher.prepared_bindings_->reads.size(), 1);
+  EXPECT_TRUE(launcher.prepared_bindings_->producers.empty());
 }

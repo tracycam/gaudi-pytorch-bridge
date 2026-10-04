@@ -23,6 +23,7 @@
 #include <string>
 #include "backend/habana_operator.h"
 #include "backend/helpers/collective_kernel_info.h"
+#include "backend/helpers/prepared_tensor_bindings.h"
 #include "backend/helpers/tensor_info.h"
 #include "backend/kernel/hpu_recipe_cache.h"
 #include "backend/kernel/hpu_shape_inference.h"
@@ -448,6 +449,14 @@ struct RecipeLauncher {
       std::vector<synLaunchTensorInfo>& syn_launch_info,
       std::vector<size_t>& external_tensor_info_indexes,
       const VecOfIValPtrSh& dma_inputs = {});
+
+  void PrepareTensorBindings(
+      at::ArrayRef<habana_torch::jit::IValue> inputs,
+      const std::shared_ptr<VecOfIValPtrSh>& intermediates,
+      const VecOfIValPtrSh& outputs,
+      const std::vector<synLaunchTensorInfo>& bindings,
+      const std::vector<size_t>& external_events);
+  std::shared_ptr<PreparedTensorBindings> prepared_bindings_;
 
   // TODO should not be a shared_ptr
   std::shared_ptr<synapse_helpers::graph::recipe_handle> recipe_{nullptr};

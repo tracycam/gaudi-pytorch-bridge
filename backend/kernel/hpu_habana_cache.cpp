@@ -1610,6 +1610,50 @@ RecipeLauncher::RecipeLauncher(
   deserialize(is, ntensorbytes_);
 }
 
+void RecipeLauncher::PrepareTensorBindings(
+    at::ArrayRef<habana_torch::jit::IValue> inputs,
+    const std::shared_ptr<VecOfIValPtrSh>& intermediates,
+    const VecOfIValPtrSh& outputs,
+    const std::vector<synLaunchTensorInfo>& bindings,
+    const std::vector<size_t>& external_events) {
+  auto prepared = std::make_shared<PreparedTensorBindings>();
+  auto keep = [&](const at::Tensor& tensor, bool output, bool dependency) {
+    prepared->storage_owners.push_back(tensor.storage());
+    (output ? prepared->outputs : prepared->inputs).push_back(tensor);
+    if (dependency) {
+      auto address = reinterpret_cast<synapse_helpers::device_ptr>(
+          tensor.storage().data_ptr().get());
+      (output ? prepared->producers : prepared->reads).push_back(address);
+    }
+  };
+  for (const auto& input : inputs) {
+    if (input.isTensor()) {
+      keep(input.toTensor(), false, true);
+    }
+  }
+  if (intermediates) {
+    for (const auto& tensor : *intermediates) {
+      if (tensor && tensor->isTensor()) {
+        keep(tensor->toTensor(), false, false);
+      }
+    }
+  }
+  for (const auto& output : outputs) {
+    if (output && output->isTensor()) {
+      keep(output->toTensor(), true, true);
+    }
+  }
+  prepared->producers.insert(
+      prepared->producers.end(), prepared->reads.begin(), prepared->reads.end());
+  for (auto index : external_events) {
+    auto address = bindings.at(index).pTensorAddress;
+    prepared->producers.erase(
+        std::remove(prepared->producers.begin(), prepared->producers.end(), address),
+        prepared->producers.end());
+  }
+  prepared_bindings_ = std::move(prepared);
+}
+
 void RecipeLauncher::Launch(
     synapse_helpers::hpuStream_t hpu_stream,
     const at::ArrayRef<habana_torch::jit::IValue>& input_refs,
@@ -1628,66 +1672,76 @@ void RecipeLauncher::Launch(
   auto& device = HPUDeviceContext::get_device();
   auto& stream_handle = device.get_stream(hpu_stream);
 
-  std::vector<at::Tensor> ptRefs;
-  std::vector<at::Tensor> outPtRefs;
+  std::vector<at::Tensor> ordinary_inputs;
+  std::vector<at::Tensor> ordinary_outputs;
+  auto& ptRefs = prepared_bindings_ ? prepared_bindings_->inputs : ordinary_inputs;
+  auto& outPtRefs =
+      prepared_bindings_ ? prepared_bindings_->outputs : ordinary_outputs;
   size_t active_graph_key_ = 0;
 
   if (device.IsStreamASyncEnabled()) {
-    std::vector<synapse_helpers::device_ptr> inDevPtr;
-    std::vector<synapse_helpers::device_ptr> outDevPtr;
+    std::vector<synapse_helpers::device_ptr> ordinary_reads;
+    std::vector<synapse_helpers::device_ptr> ordinary_producers;
+    const auto& inDevPtr =
+        prepared_bindings_ ? prepared_bindings_->reads : ordinary_reads;
+    const auto& outDevPtr =
+        prepared_bindings_ ? prepared_bindings_->producers : ordinary_producers;
 
-    ptRefs.reserve(
-        num_inputs_ + dma_inputs.size() +
-        (intermediate_tensors_ptr ? intermediate_tensors_ptr->size() : 0));
-    inDevPtr.reserve(num_inputs_ + dma_inputs.size());
-    outDevPtr.reserve(
-        num_inputs_ + num_outputs_ + num_input_to_outduplicates_ +
-        num_intermediate_to_outduplicates_);
+    if (!prepared_bindings_) {
+      ptRefs.reserve(
+          num_inputs_ + dma_inputs.size() +
+          (intermediate_tensors_ptr ? intermediate_tensors_ptr->size() : 0));
+      ordinary_reads.reserve(num_inputs_ + dma_inputs.size());
+      ordinary_producers.reserve(
+          num_inputs_ + num_outputs_ + num_input_to_outduplicates_ +
+          num_intermediate_to_outduplicates_);
 
-    for (const auto& input : input_refs) {
-      if (input.isTensor()) {
-        auto& tensor = ptRefs.emplace_back(input.toTensor());
-        inDevPtr.push_back(
-            reinterpret_cast<synapse_helpers::device_ptr>(
-                tensor.storage().data_ptr().get()));
+      for (const auto& input : input_refs) {
+        if (input.isTensor()) {
+          auto& tensor = ptRefs.emplace_back(input.toTensor());
+          ordinary_reads.push_back(
+              reinterpret_cast<synapse_helpers::device_ptr>(
+                  tensor.storage().data_ptr().get()));
+        }
       }
-    }
 
-    // Process DMA inputs if present
-    if (!dma_inputs.empty()) {
-      for (const auto& dma_input : dma_inputs) {
-        HABANA_ASSERT(
-            dma_input->isTensor(), "Only tensor is supported as dma_input");
-        auto& tensor = ptRefs.emplace_back(dma_input->toTensor());
-        inDevPtr.push_back(reinterpret_cast<uint64_t>(tensor.data_ptr()));
+      // Process DMA inputs if present
+      if (!dma_inputs.empty()) {
+        for (const auto& dma_input : dma_inputs) {
+          HABANA_ASSERT(
+              dma_input->isTensor(), "Only tensor is supported as dma_input");
+          auto& tensor = ptRefs.emplace_back(dma_input->toTensor());
+          ordinary_reads.push_back(reinterpret_cast<uint64_t>(tensor.data_ptr()));
+        }
       }
-    }
 
-    // wait for input DMA to complete before launching the compute.
+      // Hold on to the pytorch tensors for the intermediates until the recipe
+      // execution completes
+      if (intermediate_tensors_ptr != nullptr &&
+          !intermediate_tensors_ptr->empty()) {
+        for (const auto& intermediate_tensor : *intermediate_tensors_ptr) {
+          ptRefs.emplace_back(intermediate_tensor->toTensor());
+        }
+      }
+
+      outPtRefs.reserve(aten_outputs.size());
+      for (const auto& output : aten_outputs) {
+        if (output && output->isTensor()) {
+          auto& tensor = outPtRefs.emplace_back(output->toTensor());
+          ordinary_producers.push_back(
+              reinterpret_cast<synapse_helpers::device_ptr>(
+                  tensor.storage().data_ptr().get()));
+        }
+      }
+
+      // Write after read dependency, add event for the inputs. So all the
+      // tensors being written to will appear in the read side.
+      ordinary_producers.insert(
+          ordinary_producers.end(), inDevPtr.begin(), inDevPtr.end());
+    }
+    // Preserve normal entry dependencies; only Tensor/address preparation is
+    // moved out of repeated replay. All events and allocator locks remain.
     device.add_wait_events_on_stream(inDevPtr, stream_handle);
-
-    // Hold on to the pytorch tensors for the intermediates until the recipe
-    // execution completes
-    if (intermediate_tensors_ptr != nullptr &&
-        !intermediate_tensors_ptr->empty()) {
-      for (const auto& intermediate_tensor : *intermediate_tensors_ptr) {
-        ptRefs.emplace_back(intermediate_tensor->toTensor());
-      }
-    }
-
-    outPtRefs.reserve(aten_outputs.size());
-    for (const auto& output : aten_outputs) {
-      if (output && output->isTensor()) {
-        auto& tensor = outPtRefs.emplace_back(output->toTensor());
-        outDevPtr.push_back(
-            reinterpret_cast<synapse_helpers::device_ptr>(
-                tensor.storage().data_ptr().get()));
-      }
-    }
-
-    // Write after read dependency, add event for the inputs. So all the
-    // tensors being written to will appear in the read side.
-    outDevPtr.insert(outDevPtr.end(), inDevPtr.begin(), inDevPtr.end());
 
     std::vector<synapse_helpers::shared_event> ext_events;
     ext_events.reserve(external_tensor_info_indexes.size());
@@ -1706,9 +1760,13 @@ void RecipeLauncher::Launch(
           // NOLINTNEXTLINE(performance-no-int-to-ptr)
           reinterpret_cast<void*>(ti.pTensorAddress),
           " from outDevPtr since it is an external tensor");
-      outDevPtr.erase(
-          std::remove(outDevPtr.begin(), outDevPtr.end(), ti.pTensorAddress),
-          outDevPtr.end());
+      if (!prepared_bindings_) {
+        ordinary_producers.erase(
+            std::remove(
+                ordinary_producers.begin(), ordinary_producers.end(),
+                ti.pTensorAddress),
+            ordinary_producers.end());
+      }
     }
 
     auto& recipe_counter = device.get_active_recipe_counter();
@@ -1780,9 +1838,13 @@ void RecipeLauncher::Launch(
       // corresponding recipe is finished on stream
       const auto& recipe_ptr = recipe_;
       resource_holder->set_recipe_id(recipe_ptr);
-      resource_holder->set_output_tensors(outPtRefs);
+      if (prepared_bindings_) {
+        resource_holder->retain_prepared_bindings(prepared_bindings_);
+      } else {
+        resource_holder->set_output_tensors(outPtRefs);
+        resource_holder->set_input_tensors(ptRefs);
+      }
       resource_holder->set_address_lock(std::move(address_lock));
-      resource_holder->set_input_tensors(ptRefs);
       resource_holder->set_recipe_counter_ptr(&recipe_counter);
       resource_holder->set_active_graph_key(active_graph_key_);
       // ResourceHolder could be used directly as callback, if we would only
@@ -1830,6 +1892,9 @@ void RecipeLauncher::Launch(
       // corresponding recipe is finished on stream
       const auto& recipe_ptr = recipe_;
       resource_holder->set_recipe_id(recipe_ptr);
+      if (prepared_bindings_) {
+        resource_holder->retain_prepared_bindings(prepared_bindings_);
+      }
       resource_holder->set_address_lock(std::move(address_lock));
       resource_holder->set_recipe_counter_ptr(&recipe_counter);
       resource_holder->set_active_graph_key(active_graph_key_);

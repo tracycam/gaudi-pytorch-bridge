@@ -20,6 +20,7 @@
 #include <memory>
 #include <vector>
 #include "backend/habana_device/HPUStream.h"
+#include "backend/helpers/prepared_tensor_bindings.h"
 #include "backend/synapse_helpers/device.h"
 #include "backend/synapse_helpers/graph.h"
 
@@ -121,11 +122,11 @@ class GenericResourceHolder {
   }
 
   const std::vector<at::Tensor>& input_tensors() const {
-    return input_tensors_;
+    return prepared_bindings_ ? prepared_bindings_->inputs : input_tensors_;
   }
 
   const std::vector<at::Tensor>& output_tensors() const {
-    return output_tensors_;
+    return prepared_bindings_ ? prepared_bindings_->outputs : output_tensors_;
   }
 
   std::shared_ptr<synapse_helpers::graph::recipe_handle> recipe_id() const {
@@ -178,6 +179,11 @@ class GenericResourceHolder {
     output_tensors_ = tensors;
   }
 
+  void retain_prepared_bindings(
+      std::shared_ptr<const habana::PreparedTensorBindings> bindings) {
+    prepared_bindings_ = std::move(bindings);
+  }
+
   void set_active_graph_key(size_t key) {
     active_graph_key_ = key;
   }
@@ -192,6 +198,7 @@ class GenericResourceHolder {
     pt_tensors_.clear();
     input_tensors_.clear();
     output_tensors_.clear();
+    prepared_bindings_.reset();
     src_ = at::Tensor();
     dst_ = at::Tensor();
     recipe_id_.reset();
@@ -229,6 +236,7 @@ class GenericResourceHolder {
       input_tensors_; // Input tensors for collective operations.
   std::vector<at::Tensor>
       output_tensors_; // Output tensors for collective operations.
+  std::shared_ptr<const habana::PreparedTensorBindings> prepared_bindings_;
 
   std::shared_ptr<synapse_helpers::graph::recipe_handle> recipe_id_;
   synapse_helpers::active_recipe_counter* recipe_counter_ptr_ = nullptr;

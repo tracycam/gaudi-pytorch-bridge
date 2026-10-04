@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "NativeExecutionPlan.h"
 #include "RetainedTensorBinding.h"
+#include "backend/habana_device/HPUDevice.h"
 
 #include <algorithm>
 #include <array>
@@ -151,6 +152,10 @@ void NativeExecutionPlan::append(
     reject("missing collective metadata or unsupported DMA inputs");
     return;
   }
+  if (!habana::HPUDeviceContext::get_device().IsStreamASyncEnabled()) {
+    reject("synchronous stream mode requires the original adapter");
+    return;
+  }
   auto collectives = launcher.collective_kernels_info_->SnapshotForReplay();
   if (!collectives) {
     reject("unsupported collective kind or dtype");
@@ -205,6 +210,9 @@ void NativeExecutionPlan::append(
   command.intermediates = std::make_shared<VecOfIValPtrSh>(
       intermediates ? snapshot(*intermediates) : VecOfIValPtrSh{});
   command.outputs = snapshot(outputs);
+  command.launcher->PrepareTensorBindings(
+      command.inputs, command.intermediates, command.outputs, bindings,
+      external_events);
   command.bindings = bindings;
   command.names.reserve(bindings.size());
   for (const auto& binding : bindings) {
