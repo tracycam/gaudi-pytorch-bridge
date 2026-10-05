@@ -622,6 +622,20 @@ Lock::~Lock() {
   counter_->decrement();
 }
 
+class CachedLock final : public device_ptr_lock_interface {
+ public:
+  CachedLock(std::shared_ptr<synchronous_counter> counter,
+             std::shared_ptr<const std::vector<device_ptr>> values)
+      : counter_(std::move(counter)), values_(std::move(values)) { counter_->increment(); }
+  ~CachedLock() override { counter_->decrement(); }
+  iterator_t begin() const override { return values_->data(); }
+  iterator_t end() const override { return values_->data()+values_->size(); }
+  device_ptr at(size_t i) const override { return values_->at(i); }
+ private:
+  std::shared_ptr<synchronous_counter> counter_;
+  std::shared_ptr<const std::vector<device_ptr>> values_;
+};
+
 struct HandleMover {
   HandleMover() = default;
 
@@ -749,6 +763,10 @@ bool device_memory::defragment_memory(
   auto timestamp_wait = std::chrono::high_resolution_clock::now();
 
   std::unique_lock<std::mutex> lock(mutex_);
+  // Invalidate before any handle-to-pointer mapping may change, including a
+  // failed/partial defragmentation. Live Storage owners prevent handle reuse;
+  // this is the only relocation path for an already materialized live handle.
+  relocation_generation_.fetch_add(1, std::memory_order_release);
   size_t total_moved_memory = 0;
   size_t total_moved_resources = 0;
   PT_DEVMEM_DEBUG("Starting memory defragmentation");
@@ -1043,6 +1061,24 @@ device_ptr_lock device_memory::lock_addresses(
     return {std::make_unique<defragment::Lock>(
         threads_in_defragmenter_critical_section_, std::move(out))};
   }
+}
+
+device_ptr_lock device_memory::lock_addresses(prepared_addresses& prepared) {
+  {
+    std::lock_guard<std::mutex> lock(defragmentation_mutex_);
+    if (prepared.physical && prepared.generation == relocation_generation_.load(std::memory_order_acquire)) {
+      ++prepared.hits;
+      // Increment the same allocator pin counter before releasing its gate.
+      return {std::make_unique<defragment::CachedLock>(threads_in_defragmenter_critical_section_, prepared.physical)};
+    }
+  }
+  auto lease = lock_addresses(absl::Span<const device_ptr>(prepared.addresses));
+  // Do not reacquire the defrag gate while holding a lease: another thread
+  // could be holding that gate waiting for this very lease to complete.
+  prepared.physical = std::make_shared<const std::vector<device_ptr>>(lease.begin(), lease.end());
+  prepared.generation = relocation_generation_.load(std::memory_order_acquire);
+  ++prepared.misses;
+  return lease;
 }
 
 device_ptr device_memory::get_pointer(mem_handle h) {

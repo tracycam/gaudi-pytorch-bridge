@@ -284,7 +284,12 @@ std::vector<shared_event> stream_event_manager::get_wait_events(
     const std::vector<device_ptr>& device_addresses) {
   // Preserve future/submission dependencies before examining producer events.
   // Never wait for a future while holding the producer-map lock.
-  for (const auto address : device_addresses) {
+  bool has_futures;
+  {
+    std::lock_guard<std::mutex> lock(future_mut_);
+    has_futures = !future_by_addr_.empty();
+  }
+  if (has_futures) for (const auto address : device_addresses) {
     wait_for_future(address);
   }
   std::vector<shared_event> events;

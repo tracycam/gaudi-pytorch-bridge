@@ -3,10 +3,30 @@
 #include <gtest/gtest.h>
 #include <stdexcept>
 #include <thread>
+#include <random>
+#include <set>
 #include "habana_kernels/hccl_kernels.h"
 #include "backend/habana_device/RetainedTensorBinding.h"
 #include "backend/habana_device/NativeDependencyPlan.h"
 #include "backend/kernel/hpu_habana_cache.h"
+#include "backend/synapse_helpers/event_addresses.h"
+
+TEST(NativeEventAddressesTest, SupersededAddressesPreserveTheRemainingSet) {
+  for (size_t count : {size_t(1), size_t(63), size_t(64), size_t(4096)}) {
+    std::vector<synapse_helpers::device_ptr> values;
+    for (size_t i=0; i<count; ++i) values.push_back((i+1)*128);
+    synapse_helpers::EventAddresses addresses(values);
+    std::set<synapse_helpers::device_ptr> expected(values.begin(), values.end());
+    std::mt19937 generator(17);
+    std::shuffle(values.begin(), values.end(), generator);
+    for (auto value : values) {
+      addresses.remove(value);
+      addresses.remove(value); // An absent address must not corrupt another slot.
+      expected.erase(value);
+      EXPECT_EQ(std::set<synapse_helpers::device_ptr>(addresses.values().begin(), addresses.values().end()), expected);
+    }
+  }
+}
 
 // Exercise real Storage/TensorImpl mutation on CPU without relying on Lazy
 // set_, which the pinned HPU bridge does not support. The binding contract is

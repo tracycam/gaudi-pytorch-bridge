@@ -16,6 +16,7 @@
 #include <synapse_common_types.h>
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <ostream>
@@ -43,6 +44,15 @@ class device;
 
 class device_memory {
  public:
+  // The caller must retain the Storage owners and keep this abstract address
+  // set immutable. A cached translation is usable only under a fresh allocator
+  // critical-section lease and matching relocation generation.
+  struct prepared_addresses {
+    explicit prepared_addresses(std::vector<device_ptr> values) : addresses(std::move(values)) {}
+    const std::vector<device_ptr> addresses;
+    std::shared_ptr<const std::vector<device_ptr>> physical;
+    uint64_t generation = 0, hits = 0, misses = 0;
+  };
   explicit device_memory(device& device);
   ~device_memory(); //= default;
   device_memory(const device_memory&) = delete;
@@ -71,6 +81,7 @@ class device_memory {
   void clear_memory_stats();
   void reset_peak_memory_stats();
   device_ptr_lock lock_addresses(absl::Span<const device_ptr>);
+  device_ptr_lock lock_addresses(prepared_addresses&);
   pool_allocator::PoolStrategyType get_pool_strategy() {
     return pool_strategy_;
   }
@@ -102,6 +113,7 @@ class device_memory {
 
   std::mutex mutex_;
   std::mutex defragmentation_mutex_;
+  std::atomic<uint64_t> relocation_generation_{1};
   bool update_on_defragment_ = false;
   HandlesMap handle2pointer_;
   device_ptr get_pointer(mem_handle);

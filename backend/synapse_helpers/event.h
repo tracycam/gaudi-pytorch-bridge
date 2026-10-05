@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include "backend/synapse_helpers/device_types.h"
+#include "backend/synapse_helpers/event_addresses.h"
 
 namespace synapse_helpers {
 
@@ -51,7 +52,7 @@ class event {
   std::condition_variable ready_var_;
   std::atomic<bool> done_{false};
 
-  std::vector<device_ptr> device_ptrs_;
+  EventAddresses device_ptrs_;
   std::vector<std::string> event_ids_;
   stream& stream_recorded_; // used to avoid waiting on the same stream which is
                             // forbidden by synapse
@@ -138,15 +139,13 @@ class event {
    * NOTE: This implementation assumes that all of these three function are
    * called within a single SEM mutex scope*/
   const std::vector<device_ptr>& get_device_ptrs() const {
-    return device_ptrs_;
+    return device_ptrs_.values();
   };
   const std::vector<std::string>& get_event_ids() const {
     return event_ids_;
   };
   void remove_device_ptr(const device_ptr ptr_to_remove) {
-    device_ptrs_.erase(
-        std::remove(device_ptrs_.begin(), device_ptrs_.end(), ptr_to_remove),
-        device_ptrs_.end());
+    device_ptrs_.remove(ptr_to_remove);
   }
 };
 

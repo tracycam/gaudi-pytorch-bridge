@@ -59,6 +59,7 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
   std::vector<at::Tensor> retained;
   std::vector<c10::Storage> storage_owners;
   std::vector<synapse_helpers::device_ptr> addresses, dependencies;
+  std::unique_ptr<synapse_helpers::device_memory::prepared_addresses> address_plan;
   size_t workspace_size = 0;
 
   static std::shared_ptr<PreparedRegionProgram> compile(
@@ -107,6 +108,7 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     };
     unique(result->addresses);
     unique(result->dependencies);
+    result->address_plan = std::make_unique<synapse_helpers::device_memory::prepared_addresses>(result->addresses);
     for (size_t i=0; i<bindings.size(); ++i)
       for (auto address : bindings[i])
         result->calls[i].slots.push_back(std::lower_bound(result->addresses.begin(), result->addresses.end(), address)-result->addresses.begin());
@@ -135,7 +137,7 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     auto workspace = device.get_workspace_buffer(workspace_size);
     auto frame = std::make_shared<Frame>();
     frame->program = shared_from_this();
-    frame->lock = std::make_unique<synapse_helpers::device_ptr_lock>(device.lock_addresses(addresses));
+    frame->lock = std::make_unique<synapse_helpers::device_ptr_lock>(device.get_device_memory().lock_addresses(*address_plan));
     device.get_active_recipe_counter().increase();
     frame->counter = &device.get_active_recipe_counter();
     auto publish = [&] {
@@ -674,7 +676,12 @@ bool NativeExecutionPlan::replay() {
 
 NativeReplayStats NativeExecutionPlan::stats() const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  return impl_->stats;
+  auto result = impl_->stats;
+  for (const auto& region : impl_->regions) if (region.program) {
+    result.address_cache_hits += region.program->address_plan->hits;
+    result.address_cache_misses += region.program->address_plan->misses;
+  }
+  return result;
 }
 
 void NativeExecutionPlan::set_event_batching(bool enabled) {
