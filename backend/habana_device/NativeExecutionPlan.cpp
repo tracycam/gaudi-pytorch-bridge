@@ -300,7 +300,11 @@ struct NativeExecutionPlan::Impl {
   }
 };
 
-NativeExecutionPlan::NativeExecutionPlan() : impl_(std::make_unique<Impl>()) {}
+NativeExecutionPlan::NativeExecutionPlan() : impl_(std::make_unique<Impl>()) {
+  // Prepared adapters run only in proven serial regions. Unsupported regions
+  // retain their ordinary launchers; diagnostic switches can still disable it.
+  impl_->stats.compiled_regions = true;
+}
 NativeExecutionPlan::~NativeExecutionPlan() = default;
 
 void NativeExecutionPlan::reject(std::string reason) {
