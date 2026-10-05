@@ -90,6 +90,11 @@ capture 时按存储范围建立依赖，区分内部边和图外边界：同 st
 producer→collective→consumer 与独立分支两类图；验证普通 PyTorch 在图前后和
 另一 stream 读写输入输出。不能以失去有效 overlap 换取较少事件数。
 
+进一步核对源码后，需要保留两种容易遗漏的行为。external/partial event 可能在
+整条 recipe 结束前就允许通信消费某个 Tensor；把通信搬到同一 stream、等整条
+recipe 执行完，可能丢掉这段真实 overlap。现有 producer 表还登记输入的使用结束，
+用于防止别的 stream 提前覆写它，不能只处理输出写完的 RAW 依赖。
+
 ## 3. 每次执行一个资源租约，合并回收与 workspace 管理
 
 **是高效重放的基础。** 每条命令目前都有 holder、active recipe 计数、callback；
@@ -112,6 +117,10 @@ workspace 在 prepare 时预定容量。顺序 recipe 可按最大需求复用�
 
 最小实验：连续/并发 replay、跨 stream 消费、在途 reset/销毁、中途异常、内存
 压力、多 graph 共存；同时记录显存高水位与对象/事件数量。
+
+资源统一在区域末尾释放，不意味着所有可见 Tensor 都只能在末尾发布完成。
+输入最后一次被读、某个输出可以被图外消费的时间，可能早于区域结束。保活回收
+与对外依赖发布应分别描述，才能保留现有输入拷贝和通信 overlap。
 
 ## 4. 输入绑定与拷贝计划：通用性最大的缺口之一
 
