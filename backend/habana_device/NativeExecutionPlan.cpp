@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <utility>
 #include "backend/helpers/collective_kernel_info.h"
+#include "pytorch_helpers/habana_helpers/logging.h"
 
 namespace at::hpu {
 namespace {
@@ -261,19 +262,24 @@ bool NativeExecutionPlan::matches_boundary(
 }
 
 bool NativeExecutionPlan::replay() {
+  PT_BRIDGE_LAMBDA_BEGIN("NativePlanReplay");
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   TORCH_CHECK(!impl_->stats.failed, "Native HPUGraph plan failed after submission");
   if (!impl_->stats.ready) {
     return false;
   }
-  for (const auto& lease : impl_->leases) {
-    if (!lease.matches(lease.tensor)) {
-      reject("retained tensor storage/layout changed before replay");
-      return false;
+  {
+    PT_BRIDGE_LAMBDA_BEGIN("NativePlanBindingPreflight");
+    for (const auto& lease : impl_->leases) {
+      if (!lease.matches(lease.tensor)) {
+        reject("retained tensor storage/layout changed before replay");
+        return false;
+      }
     }
   }
   try {
     auto submit = [&]() {
+      PT_BRIDGE_LAMBDA_BEGIN("NativePlanSubmit");
       for (auto& command : impl_->commands) {
         // graph::launch mutates addresses to physical locked addresses. Reset the
         // abstract bindings each time; never reuse a physical pointer from capture.

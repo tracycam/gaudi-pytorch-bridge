@@ -495,6 +495,7 @@ void pointToPoint(
 } // anonymous namespace
 
 void SubmitCollectivePlan(std::function<void()> submit) {
+  PT_DISTRIBUTED_BEGIN;
   auto queue = JobThreadLazyHCCL::getInstance();
   if (queue->isCurrentThread()) {
     submit();
