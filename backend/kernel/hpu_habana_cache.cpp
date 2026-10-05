@@ -1682,6 +1682,16 @@ void RecipeLauncher::Launch(
   size_t active_graph_key_ = 0;
 
   if (device.IsStreamASyncEnabled()) {
+    if (prepared_bindings_ && !recipe_) {
+      // A captured collective-only command has no work on the recipe stream.
+      // The collective launcher prepares both buffer dependencies on its own
+      // stream and retains tensors, address locks and the communicator until
+      // completion. Do not create a second compute resource holder/counter or
+      // enqueue recipe-stream waits for a recipe that does not exist.
+      // Ordinary launches retain their existing adapter/lifetime behavior.
+      collective_kernels_info_->Launch(ptRefs, outPtRefs, true, [] {});
+      return;
+    }
     std::vector<synapse_helpers::device_ptr> ordinary_reads;
     std::vector<synapse_helpers::device_ptr> ordinary_producers;
     const auto& inDevPtr =
