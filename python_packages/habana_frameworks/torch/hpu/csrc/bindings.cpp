@@ -42,6 +42,68 @@
 
 using namespace c10::hpu;
 
+namespace {
+size_t tensor_view_hash(at::Tensor t) {
+    size_t hash = 0;
+    auto hl_t = habana_lazy::TryGetHbLazyTensor(t);
+    std::optional<habana_lazy::HbLazyTensor> hl_view = std::nullopt;
+    while (hl_t && hl_t->getDataPtr()->stride_params.has_value()) {
+      auto& params = hl_t->getDataPtr()->stride_params.value();
+      if (params.optype != habana_lazy::StridedOPType::kStridedOpView) {
+        if (hl_view.has_value()) {
+          hash = habana_lazy::HbLazyTensorViews::updateViewHash(*hl_view, hash);
+          hl_view = std::nullopt;
+        }
+        hash = habana_lazy::HbLazyTensorViews::updateViewHash(*hl_t, hash);
+      } else {
+        hl_view = hl_t;
+      }
+      t = (params.optype == habana_lazy::StridedOPType::kStridedOpDefault)
+          ? params.base
+          : params.parent;
+      hl_t = habana_lazy::TryGetHbLazyTensor(t);
+    }
+    if (hl_view.has_value()) {
+      hash = habana_lazy::HbLazyTensorViews::updateViewHash(*hl_view, hash);
+    }
+    return hash;
+}
+
+// Fast paths for ordinary captured input trees. Custom containers and Tensor
+// subclasses retain the Python implementation and its dispatch semantics.
+Py_hash_t graph_input_hash(py::handle value, bool autocast, const py::function& fallback) {
+  struct RecursionGuard {
+    RecursionGuard() {
+      if (Py_EnterRecursiveCall(" while hashing graph inputs")) throw py::error_already_set();
+    }
+    ~RecursionGuard() { Py_LeaveRecursiveCall(); }
+  } guard;
+  if (PyDict_CheckExact(value.ptr())) {
+    return graph_input_hash(py::tuple(value.attr("items")()), autocast, fallback);
+  }
+  if (PyList_CheckExact(value.ptr()) || PyTuple_CheckExact(value.ptr())) {
+    auto size = PySequence_Size(value.ptr());
+    py::tuple children(size);
+    for (Py_ssize_t i = 0; i < size; ++i) {
+      auto item = PyList_CheckExact(value.ptr()) ? PyList_GET_ITEM(value.ptr(), i)
+                                              : PyTuple_GET_ITEM(value.ptr(), i);
+      children[i] = py::int_(graph_input_hash(py::handle(item), autocast, fallback));
+    }
+    return py::hash(py::make_tuple(children, autocast));
+  }
+  if (THPVariable_CheckExact(value.ptr())) {
+    const auto& tensor = THPVariable_Unpack(value.ptr());
+    auto dtype = py::reinterpret_borrow<py::object>(
+        reinterpret_cast<PyObject*>(torch::getTHPDtype(tensor.scalar_type())));
+    // torch.Size hashes exactly like its tuple of integer dimensions.
+    py::tuple shape(tensor.dim());
+    for (int64_t i = 0; i < tensor.dim(); ++i) shape[i] = py::int_(tensor.size(i));
+    return py::hash(py::make_tuple(dtype, shape, tensor_view_hash(tensor), autocast));
+  }
+  return fallback(value, autocast).cast<Py_hash_t>();
+}
+} // namespace
+
 void hpu_init() {
   habana::HABANAGuardImpl device_guard;
   device_guard.getDevice();
@@ -262,31 +324,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     auto* dtype = (PyObject*)torch::getTHPDtype(current_dtype);
     return py::reinterpret_borrow<py::object>(dtype);
   });
-  m.def("get_view_hash", [](at::Tensor t) -> size_t {
-    size_t hash = 0;
-    auto hl_t = habana_lazy::TryGetHbLazyTensor(t);
-    std::optional<habana_lazy::HbLazyTensor> hl_view = std::nullopt;
-    while (hl_t && hl_t->getDataPtr()->stride_params.has_value()) {
-      auto& params = hl_t->getDataPtr()->stride_params.value();
-      if (params.optype != habana_lazy::StridedOPType::kStridedOpView) {
-        if (hl_view.has_value()) {
-          hash = habana_lazy::HbLazyTensorViews::updateViewHash(*hl_view, hash);
-          hl_view = std::nullopt;
-        }
-        hash = habana_lazy::HbLazyTensorViews::updateViewHash(*hl_t, hash);
-      } else {
-        hl_view = hl_t;
-      }
-      t = (params.optype == habana_lazy::StridedOPType::kStridedOpDefault)
-          ? params.base
-          : params.parent;
-      hl_t = habana_lazy::TryGetHbLazyTensor(t);
-    }
-    if (hl_view.has_value()) {
-      hash = habana_lazy::HbLazyTensorViews::updateViewHash(*hl_view, hash);
-    }
-    return hash;
-  });
+  m.def("get_view_hash", &tensor_view_hash);
+  m.def("graph_input_hash", &graph_input_hash);
   py::class_<at::hpu::HPUGraph>(m, "HPUGraph").def(pybind11::init());
   m.def("native_replay_stats", [](at::hpu::HPUGraph& graph) {
     auto stats = graph.native_replay_stats();

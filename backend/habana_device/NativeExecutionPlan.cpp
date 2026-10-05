@@ -421,8 +421,13 @@ bool NativeExecutionPlan::capture_boundary(const at::Tensor& tensor) {
 bool NativeExecutionPlan::matches_boundary(
     size_t slot, const at::Tensor& tensor) const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  return slot < impl_->boundary_leases.size() &&
-      impl_->leases[impl_->boundary_leases[slot]].matches(tensor);
+  if (slot >= impl_->boundary_leases.size()) return false;
+  const auto& lease = impl_->leases[impl_->boundary_leases[slot]];
+  // The replay preflight below validates every retained Tensor's captured
+  // metadata before any command is submitted. An identical TensorImpl needs
+  // that validation once, not again at each occurrence on a recipe boundary.
+  return tensor.unsafeGetTensorImpl() == lease.tensor.unsafeGetTensorImpl() ||
+      lease.matches(tensor);
 }
 
 bool NativeExecutionPlan::replay() {

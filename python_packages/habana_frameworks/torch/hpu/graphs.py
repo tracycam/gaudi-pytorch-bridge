@@ -547,7 +547,7 @@ class CachedParams:
 def input_hash(obj):
     # Autocast is thread-local and constant for this traversal. Keep the exact
     # existing nested key structure, without crossing Python/C++ for every leaf.
-    return _input_hash(obj, torch.hpu.is_autocast_hpu_enabled())
+    return _hpu_C.graph_input_hash(obj, torch.hpu.is_autocast_hpu_enabled(), _input_hash)
 
 
 def _input_hash(obj, autocast):

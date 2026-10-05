@@ -54,8 +54,26 @@ class InputTraversalTest(unittest.TestCase):
             with patch.object(torch.hpu, 'is_autocast_hpu_enabled', return_value=False):
                 self.assertNotEqual(first, graphs.input_hash((value[0], Metadata(tensor, 3), *value[2:])))
                 self.assertNotEqual(graphs.input_hash(tensor), graphs.input_hash(tensor.reshape(2, 2)))
-                with patch.object(graphs._hpu_C, 'get_view_hash', return_value=17):
-                    self.assertNotEqual(first, graphs.input_hash(value))
+                self.assertNotEqual(graphs.input_hash(tensor), graphs.input_hash(tensor.double()))
+
+    def test_native_hash_matches_python_key_protocol(self):
+        tensors = [torch.zeros((n, 3), dtype=dtype) for n in (1, 4)
+                   for dtype in (torch.float32, torch.bfloat16)]
+        class CustomList(list):
+            pass
+        values = [tensors, tuple(tensors), {'a': tensors, 'b': (None, 17, True)},
+                  Metadata(tensors[0], 3), collections.UserDict({'a': tensors}),
+                  torch.Size([2, 3]), CustomList(tensors), torch.nn.Parameter(tensors[0])]
+        for autocast in (False, True):
+            for value in values:
+                self.assertEqual(graphs._input_hash(value, autocast),
+                    graphs._hpu_C.graph_input_hash(value, autocast, graphs._input_hash))
+
+    def test_recursive_input_raises_instead_of_exhausting_native_stack(self):
+        value = []
+        value.append(value)
+        with self.assertRaises(RecursionError):
+            graphs.input_hash(value)
 
 
 if __name__ == '__main__':
