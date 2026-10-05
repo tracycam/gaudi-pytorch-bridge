@@ -5,6 +5,7 @@
 #include <thread>
 #include "habana_kernels/hccl_kernels.h"
 #include "backend/habana_device/RetainedTensorBinding.h"
+#include "backend/habana_device/NativeDependencyPlan.h"
 #include "backend/kernel/hpu_habana_cache.h"
 
 // Exercise real Storage/TensorImpl mutation on CPU without relying on Lazy
@@ -188,4 +189,89 @@ TEST(PreparedLaunchBindingsTest, InvalidCountRejectsBeforeChangingAnyAddress) {
   invalid.front().pTensorAddress = 0x9000;
   EXPECT_THROW(prepared.restore_addresses(invalid), std::invalid_argument);
   EXPECT_EQ(invalid.front().pTensorAddress, 0x9000);
+}
+
+namespace {
+using at::hpu::NativeCommandAccess;
+using at::hpu::NativeDependencyKind;
+using at::hpu::NativeDependencyPlan;
+
+size_t count_edges(const NativeDependencyPlan& plan, NativeDependencyKind kind) {
+  return std::count_if(plan.edges.begin(), plan.edges.end(),
+                       [kind](const auto& edge) { return edge.kind == kind; });
+}
+} // namespace
+
+TEST(NativeDependencyPlanTest, OnlyTrueWritesCreateRawEdges) {
+  // Both recipes read a shared weight. WAR event registration for that weight
+  // must not turn them into a fictitious producer/consumer pair.
+  auto plan = NativeDependencyPlan::compile({
+      {{1, 2}, {3}, true}, {{2, 4}, {5}, true}, {{3, 5}, {6}, true}});
+  ASSERT_EQ(plan.edges.size(), 2);
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::Raw), 2);
+  EXPECT_TRUE(plan.serial_collectives.empty());
+}
+
+TEST(NativeDependencyPlanTest, ReadBeforeOverwriteAndInplaceRetainAllHazards) {
+  auto plan = NativeDependencyPlan::compile({
+      {{}, {1}, true}, {{1}, {2}, true}, {{1}, {1}, false, 1},
+      {{1}, {3}, true}});
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::Raw), 3);
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::War), 1);
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::Waw), 1);
+  for (const auto& edge : plan.edges) {
+    EXPECT_LT(edge.producer, edge.consumer);
+  }
+  // The immediately previous command writes key2, not key1 consumed by HCCL.
+  EXPECT_TRUE(plan.serial_collectives.empty());
+}
+
+TEST(NativeDependencyPlanTest, CollectiveChainRequiresBothAdjacentRawEdges) {
+  auto plan = NativeDependencyPlan::compile({
+      {{1}, {2}, true}, {{2}, {3}, false, 1}, {{3}, {4}, true},
+      {{4}, {4}, false, 1}, {{4}, {5}, true}});
+  EXPECT_EQ(plan.serial_collectives, (std::vector<size_t>{1, 3}));
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::CollectiveOrder), 1);
+  // A collective with an independent compute consumer must keep overlap.
+  auto independent = NativeDependencyPlan::compile({
+      {{1}, {2}, true}, {{2}, {3}, false, 1}, {{7}, {8}, true}});
+  EXPECT_TRUE(independent.serial_collectives.empty());
+}
+
+TEST(NativeDependencyPlanTest, PartialUnknownAndMixedCommandsBlockSerialAdmission) {
+  std::vector<NativeCommandAccess> chain{
+      {{1}, {2}, true}, {{2}, {3}, false, 1}, {{3}, {4}, true}};
+  for (size_t position : {0, 1, 2}) {
+    auto partial = chain;
+    partial[position].external_events = 1;
+    EXPECT_TRUE(NativeDependencyPlan::compile(partial).serial_collectives.empty());
+    auto unknown = chain;
+    unknown[position].complete = false;
+    EXPECT_TRUE(NativeDependencyPlan::compile(unknown).serial_collectives.empty());
+  }
+  chain[1].compute = true;
+  EXPECT_TRUE(NativeDependencyPlan::compile(chain).serial_collectives.empty());
+  chain[1].compute = false;
+  chain[1].collectives = 2;
+  EXPECT_TRUE(NativeDependencyPlan::compile(chain).serial_collectives.empty());
+}
+
+TEST(NativeDependencyPlanTest, CoarsenedAliasesDeduplicateKeysAndKeepWar) {
+  auto plan = NativeDependencyPlan::compile({
+      {{1, 1, 0}, {2, 2}, true}, {{1}, {3}, true},
+      {{}, {1, 1}, true}, {{2, 3}, {4}, true}});
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::War), 2);
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::Raw), 2);
+  EXPECT_EQ(plan.edges.size(), 4);
+}
+
+TEST(NativeDependencyPlanTest, ReadHistoryResetsAtWriteAndQueueOrderIsSeparate) {
+  auto plan = NativeDependencyPlan::compile({
+      {{1}, {}, true}, {{1}, {}, true}, {{}, {1}, false, 1},
+      {{1}, {}, true}, {{}, {1}, false, 1}});
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::War), 3);
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::Waw), 1);
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::Raw), 1);
+  EXPECT_EQ(count_edges(plan, NativeDependencyKind::CollectiveOrder), 1);
+  EXPECT_TRUE(NativeDependencyPlan::compile({}).edges.empty());
 }

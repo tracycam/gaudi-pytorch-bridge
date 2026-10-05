@@ -66,6 +66,15 @@ class CollectiveOperator : public habana::HabanaOperator {
     return nullptr;
   }
 
+  // Describe actual data accesses, separately from event registrations that
+  // also protect a Tensor against being overwritten while it is read.
+  virtual bool ReplayAccesses(
+      const std::vector<PtTensorInfoShared>&,
+      std::vector<PtTensorInfoShared>&,
+      std::vector<PtTensorInfoShared>&) const {
+    return false;
+  }
+
   virtual void Serialize(std::ostream& os) const = 0;
   virtual void Deserialize(std::istream& is) = 0;
 
@@ -124,6 +133,10 @@ class HcclAllreduceOperator : public CollectiveOperator {
       synapse_helpers::event_done_callback cleanup_callback) const override;
 
   std::shared_ptr<CollectiveOperator> SnapshotForReplay() const override;
+  bool ReplayAccesses(
+      const std::vector<PtTensorInfoShared>& inputs,
+      std::vector<PtTensorInfoShared>& reads,
+      std::vector<PtTensorInfoShared>& writes) const override;
 
  private:
   uint8_t reduce_op_;
@@ -207,6 +220,10 @@ class HcclAllgatherOutOperator : public CollectiveOperator {
       synapse_helpers::event_done_callback cleanup_callback) const override;
 
   std::shared_ptr<CollectiveOperator> SnapshotForReplay() const override;
+  bool ReplayAccesses(
+      const std::vector<PtTensorInfoShared>& inputs,
+      std::vector<PtTensorInfoShared>& reads,
+      std::vector<PtTensorInfoShared>& writes) const override;
 
  private:
   int64_t comm_id_;

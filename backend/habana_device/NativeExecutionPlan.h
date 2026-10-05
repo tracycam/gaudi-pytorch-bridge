@@ -12,6 +12,13 @@ struct NativeReplayStats {
   size_t replays = 0;
   size_t collectives = 0;
   size_t queued_replays = 0;
+  size_t raw_edges = 0;
+  size_t war_edges = 0;
+  size_t waw_edges = 0;
+  size_t collective_order_edges = 0;
+  size_t serial_collectives = 0;
+  size_t external_events = 0;
+  size_t incomplete_access_commands = 0;
   bool ready = false;
   bool failed = false;
   std::string reason;

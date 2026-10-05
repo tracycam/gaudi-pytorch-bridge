@@ -68,6 +68,9 @@ class CollectiveKernelInfos {
   // nullptr means the complete collection is outside the admitted subset.
   std::shared_ptr<CollectiveKernelInfos> SnapshotForReplay() const;
   size_t Count() const { return infos_.size(); }
+  bool ReplayAccesses(
+      std::vector<PtTensorInfoShared>& reads,
+      std::vector<PtTensorInfoShared>& writes) const;
 
 
   void AddKernel(Info&& info) {

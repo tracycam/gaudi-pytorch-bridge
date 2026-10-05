@@ -110,6 +110,18 @@ CollectiveKernelInfos::SnapshotForReplay() const {
   return result;
 }
 
+bool CollectiveKernelInfos::ReplayAccesses(
+    std::vector<PtTensorInfoShared>& reads,
+    std::vector<PtTensorInfoShared>& writes) const {
+  for (const auto& info : infos_) {
+    if (!info.kernel ||
+        !info.kernel->ReplayAccesses(info.input_tensor_infos, reads, writes)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void CollectiveKernelInfos::ClearAllPtAndSynTensors() {
   for (const auto& kernel_info : infos_) {
     HABANA_ASSERT(kernel_info.kernel);

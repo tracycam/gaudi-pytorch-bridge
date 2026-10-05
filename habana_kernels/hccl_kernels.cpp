@@ -531,6 +531,18 @@ HcclAllreduceOperator::SnapshotForReplay() const {
   return copy;
 }
 
+bool HcclAllreduceOperator::ReplayAccesses(
+    const std::vector<PtTensorInfoShared>& inputs,
+    std::vector<PtTensorInfoShared>& reads,
+    std::vector<PtTensorInfoShared>& writes) const {
+  if (inputs.empty() || !inputs[0]) {
+    return false;
+  }
+  reads.push_back(inputs[0]);
+  writes.push_back(inputs[0]);
+  return true;
+}
+
 std::shared_ptr<CollectiveOperator>
 HcclAllgatherOutOperator::SnapshotForReplay() const {
   if (scalar_type_ != at::kFloat && scalar_type_ != at::kBFloat16) {
@@ -544,6 +556,18 @@ HcclAllgatherOutOperator::SnapshotForReplay() const {
     return nullptr;
   }
   return copy;
+}
+
+bool HcclAllgatherOutOperator::ReplayAccesses(
+    const std::vector<PtTensorInfoShared>& inputs,
+    std::vector<PtTensorInfoShared>& reads,
+    std::vector<PtTensorInfoShared>& writes) const {
+  if (inputs.size() < 3 || !inputs[0] || !inputs[2]) {
+    return false;
+  }
+  reads.push_back(inputs[0]);
+  writes.push_back(inputs[2]);
+  return true;
 }
 
 void HcclBroadcastOperator::AllocateAndAddSynapseNode(

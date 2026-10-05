@@ -294,6 +294,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     result["commands"] = stats.commands;
     result["collectives"] = stats.collectives;
     result["queued_replays"] = stats.queued_replays;
+    result["raw_edges"] = stats.raw_edges;
+    result["war_edges"] = stats.war_edges;
+    result["waw_edges"] = stats.waw_edges;
+    result["collective_order_edges"] = stats.collective_order_edges;
+    result["serial_collectives"] = stats.serial_collectives;
+    result["external_events"] = stats.external_events;
+    result["incomplete_access_commands"] = stats.incomplete_access_commands;
     result["replays"] = stats.replays;
     result["ready"] = stats.ready;
     result["failed"] = stats.failed;

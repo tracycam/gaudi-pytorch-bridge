@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "NativeExecutionPlan.h"
 #include "RetainedTensorBinding.h"
+#include "NativeDependencyPlan.h"
 #include "backend/habana_device/HPUDevice.h"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <unordered_map>
 #include <utility>
 #include "backend/helpers/collective_kernel_info.h"
+#include "backend/helpers/tensor_info.h"
 #include "pytorch_helpers/habana_helpers/logging.h"
 
 namespace at::hpu {
@@ -35,16 +37,19 @@ struct RecipeCommand {
   std::vector<std::string> names;
   std::vector<synLaunchTensorInfo> live_bindings;
   std::vector<size_t> external_events;
+  NativeCommandAccess access;
 };
 
-bool static_recipe(synRecipeHandle recipe) {
+bool static_recipe(
+    synRecipeHandle recipe,
+    std::vector<synRetrievedLaunchTensorInfo>& info) {
   uint32_t count = 0;
   if (synTensorRetrieveLaunchAmount(recipe, &count) != synSuccess || !count ||
       count > 65536) {
     return false;
   }
   std::vector<uint64_t> ids(count);
-  std::vector<synRetrievedLaunchTensorInfo> info(count);
+  info.resize(count);
   if (synTensorRetrieveLaunchIds(recipe, ids.data(), count) != synSuccess) {
     return false;
   }
@@ -79,6 +84,29 @@ struct NativeExecutionPlan::Impl {
   std::unordered_multimap<const c10::StorageImpl*, size_t> leases_by_storage;
   std::vector<size_t> boundary_leases;
   NativeReplayStats stats;
+  NativeDependencyPlan dependencies;
+
+  uint64_t allocation_key(uint64_t address, bool& complete) const {
+    if (!address) {
+      return 0;
+    }
+    uint64_t key = 0;
+    for (const auto& lease : leases) {
+      auto base = reinterpret_cast<uint64_t>(lease.address);
+      if (address >= base && address - base < lease.bytes) {
+        if (key && key != base) {
+          // Independently owned overlapping allocations need an explicit
+          // alias adapter; retain the ordinary launch path for this command.
+          complete = false;
+        }
+        key = base;
+      }
+    }
+    if (!key) {
+      complete = false;
+    }
+    return key;
+  }
 
   bool owns(const at::Tensor& value) const {
     if (!value.defined() || !value.has_storage()) {
@@ -131,8 +159,16 @@ void NativeExecutionPlan::reject(std::string reason) {
   impl_->leases.clear();
   impl_->leases_by_storage.clear();
   impl_->boundary_leases.clear();
+  impl_->dependencies = {};
   impl_->stats.commands = 0;
   impl_->stats.collectives = 0;
+  impl_->stats.raw_edges = 0;
+  impl_->stats.war_edges = 0;
+  impl_->stats.waw_edges = 0;
+  impl_->stats.collective_order_edges = 0;
+  impl_->stats.serial_collectives = 0;
+  impl_->stats.external_events = 0;
+  impl_->stats.incomplete_access_commands = 0;
 }
 
 void NativeExecutionPlan::append(
@@ -161,8 +197,10 @@ void NativeExecutionPlan::append(
     reject("unsupported collective kind or dtype");
     return;
   }
+  std::vector<synRetrievedLaunchTensorInfo> recipe_tensors;
   if ((!launcher.recipe_ && collectives->Empty()) ||
-      (launcher.recipe_ && !static_recipe(launcher.recipe_->syn_recipe_handle_))) {
+      (launcher.recipe_ &&
+       !static_recipe(launcher.recipe_->syn_recipe_handle_, recipe_tensors))) {
     reject("missing or non-static compute recipe");
     return;
   }
@@ -210,6 +248,45 @@ void NativeExecutionPlan::append(
   command.intermediates = std::make_shared<VecOfIValPtrSh>(
       intermediates ? snapshot(*intermediates) : VecOfIValPtrSh{});
   command.outputs = snapshot(outputs);
+  command.access.compute = static_cast<bool>(launcher.recipe_);
+  command.access.collectives = command.launcher->collective_kernels_info_->Count();
+  command.access.external_events = external_events.size();
+  // Recipe metadata is authoritative for direction. The existing producers
+  // vector also contains read inputs for WAR protection; it is not a write set.
+  std::unordered_map<uint64_t, bool> directions;
+  for (const auto& tensor : recipe_tensors) {
+    directions.emplace(tensor.tensorId, tensor.isInput != 0);
+  }
+  for (const auto& binding : bindings) {
+    if (!binding.pTensorAddress) {
+      continue;
+    }
+    auto direction = directions.find(binding.tensorId);
+    if (direction == directions.end()) {
+      command.access.complete = false;
+      continue;
+    }
+    auto key = impl_->allocation_key(binding.pTensorAddress,
+                                      command.access.complete);
+    (direction->second ? command.access.reads : command.access.writes)
+        .push_back(key);
+  }
+  std::vector<PtTensorInfoShared> collective_reads;
+  std::vector<PtTensorInfoShared> collective_writes;
+  if (!command.launcher->collective_kernels_info_->ReplayAccesses(
+          collective_reads, collective_writes)) {
+    command.access.complete = false;
+  }
+  auto collect = [&](const auto& values, auto& keys) {
+    for (const auto& tensor : values) {
+      if (tensor->get_numel()) {
+        keys.push_back(impl_->allocation_key(
+            tensor->get_buffer_start_syn(), command.access.complete));
+      }
+    }
+  };
+  collect(collective_reads, command.access.reads);
+  collect(collective_writes, command.access.writes);
   command.launcher->PrepareTensorBindings(
       command.inputs, command.intermediates, command.outputs, bindings,
       external_events);
@@ -230,6 +307,24 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   if (impl_->stats.reason.empty() && !impl_->commands.empty() &&
       impl_->commands.size() == subgraphs) {
+    std::vector<NativeCommandAccess> accesses;
+    accesses.reserve(impl_->commands.size());
+    for (const auto& command : impl_->commands) {
+      accesses.push_back(command.access);
+      impl_->stats.external_events += command.access.external_events;
+      impl_->stats.incomplete_access_commands += !command.access.complete;
+    }
+    impl_->dependencies = NativeDependencyPlan::compile(accesses);
+    for (const auto& edge : impl_->dependencies.edges) {
+      switch (edge.kind) {
+        case NativeDependencyKind::Raw: ++impl_->stats.raw_edges; break;
+        case NativeDependencyKind::War: ++impl_->stats.war_edges; break;
+        case NativeDependencyKind::Waw: ++impl_->stats.waw_edges; break;
+        case NativeDependencyKind::CollectiveOrder:
+          ++impl_->stats.collective_order_edges; break;
+      }
+    }
+    impl_->stats.serial_collectives = impl_->dependencies.serial_collectives.size();
     impl_->stats.ready = true;
   } else if (impl_->stats.reason.empty()) {
     reject("capture does not provide one compiled recipe per subgraph");
