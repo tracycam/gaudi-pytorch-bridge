@@ -275,3 +275,36 @@ TEST(NativeDependencyPlanTest, ReadHistoryResetsAtWriteAndQueueOrderIsSeparate) 
   EXPECT_EQ(count_edges(plan, NativeDependencyKind::CollectiveOrder), 1);
   EXPECT_TRUE(NativeDependencyPlan::compile({}).edges.empty());
 }
+
+TEST(NativeDependencyPlanTest, RegionsStopAtUnknownAndCommunicatorBoundaries) {
+  std::vector<NativeCommandAccess> commands;
+  std::vector<uint64_t> communicators;
+  for (size_t i = 0; i < 13; ++i) {
+    commands.push_back({{i + 1}, {i + 2}, i % 2 == 0, i % 2});
+    communicators.push_back(i % 2 ? 7 : 0);
+  }
+  auto regions = NativeDependencyPlan::compile(commands).serial_regions(commands, communicators);
+  ASSERT_EQ(regions.size(), 1);
+  EXPECT_EQ(regions[0].collectives, (std::vector<size_t>{1,3,5,7,9,11}));
+  commands[6].complete = false;
+  regions = NativeDependencyPlan::compile(commands).serial_regions(commands, communicators);
+  ASSERT_EQ(regions.size(), 2);
+  EXPECT_EQ(regions[0].collectives, (std::vector<size_t>{1,3}));
+  EXPECT_EQ(regions[1].collectives, (std::vector<size_t>{9,11}));
+  commands[6].complete = true;
+  communicators[7] = 8;
+  regions = NativeDependencyPlan::compile(commands).serial_regions(commands, communicators);
+  ASSERT_EQ(regions.size(), 2);
+  EXPECT_EQ(regions[0].collectives, (std::vector<size_t>{1,3,5}));
+  EXPECT_EQ(regions[1].collectives, (std::vector<size_t>{9,11}));
+  EXPECT_THROW(NativeDependencyPlan::compile(commands).serial_regions(commands, {}),
+               std::invalid_argument);
+}
+
+TEST(NativeDependencyPlanTest, OneCollectiveCannotAmortizeRegionGuards) {
+  std::vector<NativeCommandAccess> commands{
+      {{1}, {2}, true}, {{2}, {3}, false, 1}, {{3}, {4}, true}};
+  auto plan = NativeDependencyPlan::compile(commands);
+  ASSERT_EQ(plan.serial_collectives.size(), 1);
+  EXPECT_TRUE(plan.serial_regions(commands, {0,7,0}).empty());
+}

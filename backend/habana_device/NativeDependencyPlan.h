@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -31,9 +32,56 @@ struct NativeDependencyEdge {
   NativeDependencyKind kind;
 };
 
+struct NativeSerialRegion {
+  uint64_t communicator;
+  std::vector<size_t> collectives;
+};
+
 struct NativeDependencyPlan {
   std::vector<NativeDependencyEdge> edges;
   std::vector<size_t> serial_collectives;
+
+  std::vector<NativeSerialRegion> serial_regions(
+      const std::vector<NativeCommandAccess>& commands,
+      const std::vector<uint64_t>& communicators) const {
+    if (commands.size() != communicators.size()) {
+      throw std::invalid_argument("collective communicator table size changed");
+    }
+    std::vector<bool> eligible(commands.size(), false);
+    for (auto index : serial_collectives) {
+      eligible.at(index) = true;
+    }
+    std::vector<NativeSerialRegion> result;
+    NativeSerialRegion region{};
+    auto finish = [&]() {
+      if (region.collectives.size() > 1) {
+        result.push_back(std::move(region));
+      }
+      region = {};
+    };
+    for (size_t i = 0; i < commands.size(); ++i) {
+      const auto& command = commands[i];
+      if (!command.complete || command.external_events ||
+          (command.compute && command.collectives)) {
+        finish();
+        continue;
+      }
+      if (!command.collectives) {
+        continue;
+      }
+      if (!eligible[i] || !communicators[i]) {
+        finish();
+        continue;
+      }
+      if (region.communicator && region.communicator != communicators[i]) {
+        finish();
+      }
+      region.communicator = communicators[i];
+      region.collectives.push_back(i);
+    }
+    finish();
+    return result;
+  }
 
   static NativeDependencyPlan compile(
       const std::vector<NativeCommandAccess>& commands) {

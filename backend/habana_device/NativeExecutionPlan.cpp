@@ -87,7 +87,12 @@ struct NativeExecutionPlan::Impl {
   std::vector<size_t> boundary_leases;
   NativeReplayStats stats;
   NativeDependencyPlan dependencies;
-  std::shared_ptr<habana::HcclCommunicator> region_communicator;
+  struct StreamRegion {
+    size_t first;
+    size_t last;
+    std::shared_ptr<habana::HcclCommunicator> communicator;
+  };
+  std::vector<StreamRegion> regions;
 
   uint64_t allocation_key(uint64_t address, bool& complete) const {
     if (!address) {
@@ -163,7 +168,7 @@ void NativeExecutionPlan::reject(std::string reason) {
   impl_->leases_by_storage.clear();
   impl_->boundary_leases.clear();
   impl_->dependencies = {};
-  impl_->region_communicator.reset();
+  impl_->regions.clear();
   impl_->stats.commands = 0;
   impl_->stats.collectives = 0;
   impl_->stats.raw_edges = 0;
@@ -342,29 +347,22 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
       }
     }
     impl_->stats.serial_collectives = impl_->dependencies.serial_collectives.size();
-    // First adapter: all collectives must be strict adjacent RAW chains, use
-    // one communicator and have no partial readiness or unknown accesses.
-    // Independent/mixed/partial chains retain the original stream policy.
-    // A single collective replaces two cross-stream waits with two FIFO guards
-    // and adds records; the paired probe confirmed that this regresses latency.
-    if (impl_->stats.collectives > 1 && !impl_->stats.external_events &&
-        !impl_->stats.incomplete_access_commands &&
-        impl_->stats.serial_collectives == impl_->stats.collectives &&
-        !GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
-      std::shared_ptr<habana::HcclCommunicator> communicator;
-      bool same = true;
-      for (auto index : impl_->dependencies.serial_collectives) {
-        auto candidate = impl_->commands[index].launcher
-                             ->collective_kernels_info_->SingleReplayCommunicator();
-        if (!candidate || (communicator && communicator != candidate)) {
-          same = false;
-          break;
-        }
-        communicator = std::move(candidate);
+    // Compile maximal proven regions. Unknown accesses, partial readiness,
+    // mixed compute/collective commands and communicator changes are barriers.
+    // A region needs more than one collective to amortize its two FIFO guards.
+    if (!GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
+      std::vector<uint64_t> communicator_keys;
+      std::vector<std::shared_ptr<habana::HcclCommunicator>> communicators;
+      for (const auto& command : impl_->commands) {
+        auto communicator = command.launcher->collective_kernels_info_
+                                ->SingleReplayCommunicator();
+        communicator_keys.push_back(reinterpret_cast<uint64_t>(communicator.get()));
+        communicators.push_back(std::move(communicator));
       }
-      if (same) {
-        impl_->region_communicator = std::move(communicator);
-        impl_->stats.coalesced_collectives = impl_->stats.collectives;
+      for (const auto& region : impl_->dependencies.serial_regions(accesses, communicator_keys)) {
+        impl_->regions.push_back({region.collectives.front(), region.collectives.back(),
+                                  communicators[region.collectives.front()]});
+        impl_->stats.coalesced_collectives += region.collectives.size();
       }
     }
     impl_->stats.ready = true;
@@ -417,12 +415,11 @@ bool NativeExecutionPlan::replay() {
   try {
     auto submit = [&]() {
       PT_BRIDGE_LAMBDA_BEGIN("NativePlanSubmit");
-      auto communicator = impl_->region_communicator;
+      std::shared_ptr<habana::HcclCommunicator> communicator;
+      size_t region_index = 0;
       auto& device = habana::HPUDeviceContext::get_device();
       auto& compute = device.get_stream(impl_->commands.front().stream);
-      synapse_helpers::stream* communication = communicator
-          ? &communicator->getDeviceCtxt()->get_stream_fromhandle(
-                communicator->getCommStream()) : nullptr;
+      synapse_helpers::stream* communication = nullptr;
       bool entered = false;
       auto leave = [&]() {
         if (entered) {
@@ -436,12 +433,16 @@ bool NativeExecutionPlan::replay() {
       try {
         for (size_t index = 0; index < impl_->commands.size(); ++index) {
           auto& command = impl_->commands[index];
-          if (communicator && command.access.collectives) {
-            if (!entered) {
-              device.record_and_wait_for_event(*communication, compute,
-                                               [communicator]() {});
-              entered = true;
-            }
+          if (region_index < impl_->regions.size() &&
+              index == impl_->regions[region_index].first) {
+            communicator = impl_->regions[region_index].communicator;
+            communication = &communicator->getDeviceCtxt()->get_stream_fromhandle(
+                communicator->getCommStream());
+            device.record_and_wait_for_event(*communication, compute,
+                                             [communicator]() {});
+            entered = true;
+          }
+          if (entered && command.access.collectives) {
             command.launcher->collective_kernels_info_->SetReplayStream(&compute);
           }
           // graph::launch mutates addresses to physical locked addresses. Reset the
@@ -452,8 +453,9 @@ bool NativeExecutionPlan::replay() {
               command.stream, command.inputs, command.intermediates,
               command.outputs, command.live_bindings, command.external_events,
               command.dma_inputs);
-          if (communicator && index == impl_->dependencies.serial_collectives.back()) {
+          if (entered && index == impl_->regions[region_index].last) {
             leave();
+            ++region_index;
           }
         }
       } catch (...) {
@@ -477,7 +479,7 @@ bool NativeExecutionPlan::replay() {
     throw;
   }
   ++impl_->stats.replays;
-  impl_->stats.coalesced_replays += static_cast<bool>(impl_->region_communicator);
+  impl_->stats.coalesced_replays += !impl_->regions.empty();
   return true;
 }
 
