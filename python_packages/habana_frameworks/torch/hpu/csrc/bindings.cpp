@@ -332,8 +332,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("get_view_hash", &tensor_view_hash);
   m.def("graph_input_hash", &graph_input_hash);
   py::class_<at::hpu::HPUGraph>(m, "HPUGraph").def(pybind11::init());
+  // Graph operations may wait for the HCCL queue or event cleanup. Cleanup
+  // can decref Python-backed Tensors, so no graph lock may be acquired while
+  // holding the GIL. Release at the API boundary, outside graph/plan mutexes;
+  // argument ownership and return conversion remain protected by pybind.
   m.def("native_replay_stats", [](at::hpu::HPUGraph& graph) {
-    auto stats = graph.native_replay_stats();
+    at::hpu::NativeReplayStats stats;
+    {
+      py::gil_scoped_release release;
+      stats = graph.native_replay_stats();
+    }
     py::dict result;
     result["commands"] = stats.commands;
     result["collectives"] = stats.collectives;
@@ -369,13 +377,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   });
   m.def("native_replay_event_batching", [](at::hpu::HPUGraph& graph, bool enabled) {
     graph.set_native_event_batching(enabled);
-  });
+  }, py::call_guard<py::gil_scoped_release>());
   m.def("native_replay_compiled_regions", [](at::hpu::HPUGraph& graph, bool enabled) {
     graph.set_native_compiled_regions(enabled);
-  });
+  }, py::call_guard<py::gil_scoped_release>());
   m.def("native_dependency_diagnostics", [](at::hpu::HPUGraph& graph) {
+    std::vector<at::hpu::NativeAccessDiagnostic> entries;
+    {
+      py::gil_scoped_release release;
+      entries = graph.native_dependency_diagnostics();
+    }
     py::list result;
-    for (const auto& entry : graph.native_dependency_diagnostics()) {
+    for (const auto& entry : entries) {
       py::dict item;
       item["command"] = entry.command;
       item["compute"] = entry.compute;
@@ -390,44 +403,51 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     return result;
   });
   m.def(
-      "capture_begin", [](at::hpu::HPUGraph& graph) { graph.capture_begin(); });
+      "capture_begin", [](at::hpu::HPUGraph& graph) { graph.capture_begin(); },
+      py::call_guard<py::gil_scoped_release>());
   m.def("capture_begin", [](at::hpu::HPUGraph& graph, bool dry_run) {
     graph.capture_begin(dry_run);
-  });
+  }, py::call_guard<py::gil_scoped_release>());
   m.def("get_user_input_match_indices", [](at::hpu::HPUGraph& graph) {
     return graph.get_user_input_match_indices();
-  });
-  m.def("capture_end", [](at::hpu::HPUGraph& graph) { graph.capture_end(); });
+  }, py::call_guard<py::gil_scoped_release>());
+  m.def("capture_end", [](at::hpu::HPUGraph& graph) { graph.capture_end(); },
+      py::call_guard<py::gil_scoped_release>());
   m.def(
       "replay",
       [](at::hpu::HPUGraph& graph,
          std::vector<at::Tensor> inputs = {},
-         bool async = false) { graph.replay(inputs, async); });
+         bool async = false) { graph.replay(inputs, async); },
+      py::call_guard<py::gil_scoped_release>());
   m.def(
       "replayV2",
       [](at::hpu::HPUGraph& graph,
          std::vector<at::Tensor>& static_inputs,
          std::vector<at::Tensor>& inputs,
-         bool async = false) { graph.replayV2(static_inputs, inputs, async); });
+         bool async = false) { graph.replayV2(static_inputs, inputs, async); },
+      py::call_guard<py::gil_scoped_release>());
   m.def(
       "replayV3",
       [](at::hpu::HPUGraph& graph,
          std::vector<at::Tensor>& inputs,
-         bool async = false) { graph.replayV3(inputs, async); });
-  m.def("clear_inputs", [](at::hpu::HPUGraph& graph) { graph.clear_inputs(); });
+         bool async = false) { graph.replayV3(inputs, async); },
+      py::call_guard<py::gil_scoped_release>());
+  m.def("clear_inputs", [](at::hpu::HPUGraph& graph) { graph.clear_inputs(); },
+      py::call_guard<py::gil_scoped_release>());
   m.def(
       "mark_user_outputs",
       [](at::hpu::HPUGraph& graph,
          std::vector<at::Tensor>& outputs,
          bool free_inplace = true) {
         graph.mark_user_outputs(outputs, free_inplace);
-      });
+      }, py::call_guard<py::gil_scoped_release>());
   m.def(
       "mark_user_inputs",
       [](at::hpu::HPUGraph& graph, std::vector<at::Tensor>& static_inputs) {
         graph.mark_user_inputs(static_inputs);
-      });
-  m.def("destroy", [](at::hpu::HPUGraph& graph) { graph.destroy(); });
+      }, py::call_guard<py::gil_scoped_release>());
+  m.def("destroy", [](at::hpu::HPUGraph& graph) { graph.destroy(); },
+      py::call_guard<py::gil_scoped_release>());
   m.def("enable_dynamic_shape", []() {
     habana_helpers::EnableRefineDynamicShape();
   });
