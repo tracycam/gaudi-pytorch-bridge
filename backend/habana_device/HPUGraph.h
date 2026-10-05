@@ -147,13 +147,14 @@ struct HPUGraph {
   void set_native_compiled_regions(bool enabled);
   std::vector<NativeAccessDiagnostic> native_dependency_diagnostics() const;
   std::unordered_set<size_t> get_user_input_match_indices() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     return user_input_match_indices_;
   }
 
  protected:
   // Stream on which capture began
   c10::hpu::HPUStream capture_stream_;
-  std::recursive_mutex mutex_;
+  mutable std::recursive_mutex mutex_;
   bool dynamic_env_ = false;
   bool capturing_ = false;
   std::vector<std::shared_ptr<SingleHPUGraph>> captured_graphs;
@@ -162,6 +163,13 @@ struct HPUGraph {
   // tensors that are input as well as intermediate outputs
   std::vector<habana_lazy::HbLazyTensor> hblazy_tensors_in_out_;
   std::unique_ptr<NativeExecutionPlan> native_plan_;
+  struct NativeBoundary {
+    std::shared_ptr<habana_lazy::Data> data;
+    bool plain_input;
+  };
+  std::vector<NativeBoundary> native_boundaries_;
+  std::vector<const at::Tensor*> native_boundary_values_;
+  size_t native_boundary_references_ = 0;
 };
 
 } // namespace at::hpu

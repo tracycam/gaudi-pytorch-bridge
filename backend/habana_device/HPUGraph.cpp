@@ -85,6 +85,9 @@ void HPUGraph::capture_begin(bool dry_run) {
   /*flush current Accumulated graph, before capture */
   PT_IRGRAPH_DEBUG("step marker due to new HPUGraph::capture_begin");
   habana_lazy::HbLazyTensor::StepMarker({});
+  native_boundaries_.clear();
+  native_boundary_values_.clear();
+  native_boundary_references_ = 0;
   native_plan_ = std::make_unique<NativeExecutionPlan>();
   if (dry_run) {
     native_plan_->reject("dry-run requires deferred plan materialization");
@@ -152,24 +155,34 @@ void HPUGraph::capture_end() {
         native_plan_->reject("RNG or explicit input rebinding requires adapter");
       }
     }
-    // Flatten public Lazy boundaries in deterministic slot order. The plan
-    // stores backend leases, not Lazy IR or model-specific metadata.
+    // Compile the Lazy adapter once. A value shared by adjacent recipes needs
+    // one live binding guard, not a repeated recipe walk and mutex per use.
+    // The backend plan continues to know only Tensor leases, never Lazy IR.
+    std::unordered_map<const habana_lazy::Data*, size_t> boundary_slots;
+    auto capture_boundary = [&](const auto& tensor, bool plain_input) {
+      ++native_boundary_references_;
+      const auto& data = tensor.getDataPtr();
+      if (!data->tensor_data || (plain_input && data->stride_params.has_value())) {
+        native_plan_->reject("unsupported captured Lazy boundary");
+        return;
+      }
+      auto found = boundary_slots.find(data.get());
+      if (found != boundary_slots.end()) {
+        native_boundaries_[found->second].plain_input |= plain_input;
+        return;
+      }
+      if (!native_plan_->capture_boundary(*data->tensor_data)) {
+        native_plan_->reject("unsupported captured Lazy boundary");
+        return;
+      }
+      boundary_slots.emplace(data.get(), native_boundaries_.size());
+      native_boundaries_.push_back({data, plain_input});
+    };
     for (const auto& graph : captured_graphs) {
-      for (const auto& input : graph->hblazy_tensors_in_) {
-        const auto& data = input.getDataPtr();
-        if (!data->tensor_data || data->stride_params.has_value() ||
-            !native_plan_->capture_boundary(*data->tensor_data)) {
-          native_plan_->reject("unsupported captured input boundary");
-        }
-      }
-      for (const auto& output : graph->hblazy_tensors_out_) {
-        const auto& data = output.getDataPtr();
-        if (!data->tensor_data ||
-            !native_plan_->capture_boundary(*data->tensor_data)) {
-          native_plan_->reject("unsupported captured output boundary");
-        }
-      }
+      for (const auto& input : graph->hblazy_tensors_in_) capture_boundary(input, true);
+      for (const auto& output : graph->hblazy_tensors_out_) capture_boundary(output, false);
     }
+    native_boundary_values_.resize(native_boundaries_.size());
     native_plan_->seal(captured_graphs.size());
   }
 
@@ -188,6 +201,9 @@ void HPUGraph::destroy() {
   hblazy_tensors_in_out_.clear();
   capturing_ = false;
   native_plan_.reset();
+  native_boundaries_.clear();
+  native_boundary_values_.clear();
+  native_boundary_references_ = 0;
 
   habana_lazy::HbExecutionContext* context =
       habana_lazy::get_device_lazy_execution_context();
@@ -248,6 +264,7 @@ void HPUGraph::mark_step() {
  then x can only be deleted after the forward function has run completely
  and user doesn't need the tensor anymore */
 void HPUGraph::clear_inputs() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (native_plan_) {
     native_plan_->reject("input lease release requested");
   }
@@ -284,25 +301,16 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
   }
   if (native_plan_ && native_plan_->stats().ready) {
     bool bound = true;
-    size_t boundary_slot = 0;
-    for (const auto& graph : captured_graphs) {
-      for (const auto& input : graph->hblazy_tensors_in_) {
-        const auto& data = input.getDataPtr();
-        if (!data->tensor_data || data->stride_params.has_value() ||
-            !native_plan_->matches_boundary(boundary_slot++, *data->tensor_data)) {
-          bound = false;
-        }
-      }
-      if (!bound) {
+    for (size_t slot=0; slot<native_boundaries_.size(); ++slot) {
+      const auto& boundary = native_boundaries_[slot];
+      const auto& data = boundary.data;
+      if (!data->tensor_data || (boundary.plain_input && data->stride_params.has_value())) {
+        bound = false;
         break;
       }
-      for (const auto& output : graph->hblazy_tensors_out_) {
-        const auto& data = output.getDataPtr();
-        if (!data->tensor_data || !native_plan_->matches_boundary(boundary_slot++, *data->tensor_data)) {
-          bound = false;
-        }
-      }
+      native_boundary_values_[slot] = &*data->tensor_data;
     }
+    if (bound) bound = native_plan_->matches_boundaries(native_boundary_values_);
     if (bound) {
       c10::StreamGuard stream_guard(capture_stream_.unwrap());
       if (native_plan_->replay()) {
@@ -578,7 +586,11 @@ NativeExecutionPlan* HPUGraph::native_capture_plan() {
 }
 
 NativeReplayStats HPUGraph::native_replay_stats() const {
-  return native_plan_ ? native_plan_->stats() : NativeReplayStats{};
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  auto result = native_plan_ ? native_plan_->stats() : NativeReplayStats{};
+  result.boundary_references = native_boundary_references_;
+  result.unique_boundaries = native_boundaries_.size();
+  return result;
 }
 
 void HPUGraph::set_native_event_batching(bool enabled) {
@@ -594,6 +606,7 @@ void HPUGraph::set_native_compiled_regions(bool enabled) {
 }
 
 std::vector<NativeAccessDiagnostic> HPUGraph::native_dependency_diagnostics() const {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   return native_plan_ ? native_plan_->dependency_diagnostics()
                       : std::vector<NativeAccessDiagnostic>{};
 }

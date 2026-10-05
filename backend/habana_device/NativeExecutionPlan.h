@@ -35,6 +35,7 @@ struct NativeReplayStats {
   size_t prepared_replayed_commands = 0;
   std::vector<std::string> prepared_rejections;
   size_t address_cache_hits = 0, address_cache_misses = 0;
+  size_t boundary_references = 0, unique_boundaries = 0, retained_bindings = 0;
   bool ready = false;
   bool failed = false;
   std::string reason;
@@ -69,9 +70,10 @@ class NativeExecutionPlan {
       const VecOfIValPtrSh& dma_inputs);
   void reject(std::string reason);
   void seal(size_t subgraphs);
-  // Record exact boundary slots independently of storage deduplication.
+  // The graph adapter supplies unique live boundary slots; storage and layout
+  // guards remain independent of that adapter's Lazy Tensor representation.
   bool capture_boundary(const at::Tensor& tensor);
-  bool matches_boundary(size_t slot, const at::Tensor& tensor) const;
+  bool matches_boundaries(at::ArrayRef<const at::Tensor*> tensors) const;
   // false means rejection before submission; submission failures throw and
   // poison the plan, so a partially submitted chain can never run twice.
   bool replay();

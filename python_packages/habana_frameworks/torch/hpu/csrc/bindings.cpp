@@ -369,6 +369,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     result["prepared_rejections"] = stats.prepared_rejections;
     result["address_cache_hits"] = stats.address_cache_hits;
     result["address_cache_misses"] = stats.address_cache_misses;
+    result["boundary_references"] = stats.boundary_references;
+    result["unique_boundaries"] = stats.unique_boundaries;
+    result["retained_bindings"] = stats.retained_bindings;
     result["replays"] = stats.replays;
     result["ready"] = stats.ready;
     result["failed"] = stats.failed;

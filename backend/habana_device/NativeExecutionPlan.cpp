@@ -574,16 +574,19 @@ bool NativeExecutionPlan::capture_boundary(const at::Tensor& tensor) {
   return false;
 }
 
-bool NativeExecutionPlan::matches_boundary(
-    size_t slot, const at::Tensor& tensor) const {
+bool NativeExecutionPlan::matches_boundaries(
+    at::ArrayRef<const at::Tensor*> tensors) const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  if (slot >= impl_->boundary_leases.size()) return false;
-  const auto& lease = impl_->leases[impl_->boundary_leases[slot]];
-  // The replay preflight below validates every retained Tensor's captured
-  // metadata before any command is submitted. An identical TensorImpl needs
-  // that validation once, not again at each occurrence on a recipe boundary.
-  return tensor.unsafeGetTensorImpl() == lease.tensor.unsafeGetTensorImpl() ||
-      lease.matches(tensor);
+  if (tensors.size() != impl_->boundary_leases.size()) return false;
+  for (size_t slot=0; slot<tensors.size(); ++slot) {
+    const auto& lease = impl_->leases[impl_->boundary_leases[slot]];
+    // Replay still checks every retained Tensor's complete metadata before
+    // submission. Here we only have to detect a replaced boundary Tensor.
+    if (!tensors[slot] ||
+        (tensors[slot]->unsafeGetTensorImpl() != lease.tensor.unsafeGetTensorImpl() &&
+         !lease.matches(*tensors[slot]))) return false;
+  }
+  return true;
 }
 
 bool NativeExecutionPlan::replay() {
@@ -705,6 +708,7 @@ bool NativeExecutionPlan::replay() {
 NativeReplayStats NativeExecutionPlan::stats() const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   auto result = impl_->stats;
+  result.retained_bindings = impl_->leases.size();
   for (const auto& region : impl_->regions) if (region.program) {
     result.address_cache_hits += region.program->address_plan->hits;
     result.address_cache_misses += region.program->address_plan->misses;
