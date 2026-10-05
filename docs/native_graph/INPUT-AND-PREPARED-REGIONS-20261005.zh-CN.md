@@ -202,3 +202,45 @@ CPU graph.replay 从 6.818 降至 4.519ms，但输出等待从 3.501 增至 5.80
 修复后的整模型验证仍需收账；本节不把修复死锁当作 TPS 收益。
 原始结果、旧版本失败、调用栈、源码 bundle 和 wheel 均归档于本地
 `bridge-event-batch-20261005` 实验资产目录。
+
+
+## GIL 修复后的完整结果与小输入批量上传
+
+`gil70-u`（bridge `7022d55e2`、serving `847487d`）通过完整 70 层、TP8、4K、
+无 MTP、160 输出、B1/B2 ABBA。使用独立检索 fixture，所有答案含正确的 7391，
+六组页边界完整 logits 一致，没有外部执行器。连续输出墙钟结果：
+
+| batch | control ms | candidate ms | 吞吐 |
+|---|---:|---:|---:|
+| 1 | 11.6049 | 11.2904 | 86.1705 → 88.5712 TPS |
+| 2 | 15.2311 | 14.8948 | 131.3104 → 134.2753 tokens/s |
+
+候选距 90 TPS 仍差 0.1792ms/步。去掉未使用的 KV 树、原生标量/元数据哈希、
+GIL 修复处在该版本的共同底座里，不能用此 ABBA 单独归因其中任何一项。
+`rows70-v` 加入 unit-query CPU 行准备及直接更新已选缓冲后，质量仍通过，
+B1 88.5216、B2 134.1970，与前轮基本持平；尚未证明这两处带来整模型收益。
+
+继续复用现有 `device::copy_data_to_device(transfer_manifest)`，为标准
+`aten::_foreach_copy_` 补小型、独立 H2D 输入批量提交。保留普通 Lazy Tensor
+准备，整批只做一次 DMA/producer 登记。视图、重叠目标、转换等非准入情况
+委托原 PyTorch slow kernel；非 inference 调用不改变 accumulation-thread 行为。
+大传输保留原路，避免为权重上传额外复制大块 host staging。
+
+- `copy-x` 混合 INT32/BF16/FP32 的五输入微基准：含 graph 和完成等待，约
+  117–118us → 79–82us。32 次变输入并立即毒化 CPU 源、待完成 D2H 及别名、
+  视图、类型转换回退均通过。这是微基准，不是模型 TPS。
+- 首次 `copy-w` 把 profiler 的 B/E 两个事件误数为两次调用，导致覆盖门假失败；
+  修为只计 B/X，失败记录保留。
+- 审计真实模型发现 slot 为逻辑 INT64，故复用原 `preProcessIfLongorDouble`
+  转换后再批量提交。不能将逻辑八字节直接送入物理四字节 Tensor。
+- `copy-aa` 测试误以为 `_foreach_copy_` 支持反向传播；旧 wheel 的纯 CPU 路径
+  独立复现相同的 derivative-not-implemented 错误。验收改为与上游 CPU 行为
+  对照，不把上游没有实现的功能误判为回归。
+- `copy-ab` 真实混合类型、异步依赖和上述回退检查通过；`copy2-ab` 两层 B1/B2
+  及六组 logits 通过。计时后 CPU trace 确认八 rank 各 62 次批量 H2D 提交，
+  没有只在微基准生效。
+
+进一步把 Lazy 边界按 Data 身份去重，并批量验证 Tensor 绑定。Lazy 层拥有该表，
+backend plan 仍仅处理 Tensor lease；所有 retained Tensor 的完整元数据校验保留。
+同时补齐 GIL 释放后 stats/诊断/clear_inputs 与 reset 的 graph 互斥。
+该改动尚在构建验证，不能宣称已达到 90 TPS。
