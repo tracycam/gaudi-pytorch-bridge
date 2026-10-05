@@ -1,5 +1,9 @@
 # 完整设备计算范围迁移
 
+后续结果见 [RESULTS-COMPLETE-STEP-20261005.zh-CN.md](RESULTS-COMPLETE-STEP-20261005.zh-CN.md)：
+70 层实现和完整 logits 检查完成；收益约 0.24–0.32ms，未达到 90TPS。下文保留
+第一检查点原始预算与阶段说明，以后续结果为当前裁决。
+
 ## 问题与边界
 
 同驻留模型的旧 SDK / bridge 对照确认 70 层存在 2.8–2.9ms 差距；缩到两层
