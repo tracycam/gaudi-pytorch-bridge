@@ -121,6 +121,7 @@ class HandlesMap {
   void check_id_overflow(mem_handle::id_t id, size_t size, uint64_t offset_bit);
   PtrSize GetPtrSize(mem_handle::id_t id) const;
   void SetPtrSize(mem_handle::id_t id, PtrSize ptr_size);
+  uint64_t GetGeneration(mem_handle::id_t id) const;
   void Erase(mem_handle::id_t id);
   void MarkMemoryFixed(mem_handle::id_t id);
   bool checkIdIsReset(mem_handle::id_t id);
@@ -191,6 +192,7 @@ class HandlesMap {
     bool fixed_ = false;
     bool active_ = false;
     bool reset_ = false;
+    uint64_t generation_ = 0;
     Record() = default;
     Record(size_t size, hpuStream_t stream)
         : ptr_size_(size, stream), active_(true) {}
@@ -199,6 +201,7 @@ class HandlesMap {
 
   std::array<std::deque<Record>, END_> handles_;
   std::array<std::queue<mem_handle::id_t>, END_> free_handles_;
+  uint64_t next_generation_ = 0;
 };
 
 } // namespace synapse_helpers

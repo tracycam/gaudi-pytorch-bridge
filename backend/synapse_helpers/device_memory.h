@@ -51,6 +51,7 @@ class device_memory {
     explicit prepared_addresses(std::vector<device_ptr> values) : addresses(std::move(values)) {}
     const std::vector<device_ptr> addresses;
     std::shared_ptr<const std::vector<device_ptr>> physical;
+    std::vector<std::pair<mem_handle::id_t, uint64_t>> handle_generations;
     uint64_t generation = 0, hits = 0, misses = 0;
   };
   explicit device_memory(device& device);

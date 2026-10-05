@@ -141,6 +141,7 @@ mem_handle::id_t HandlesMap::Insert(size_t size, hpuStream_t stream) {
     check_id_overflow(id, size, offset_bits);
     free_handles_[bucket_index].pop();
     handles_[bucket_index][id] = Record(size, stream);
+    handles_[bucket_index][id].generation_ = ++next_generation_;
     return create_memhandle_from_bucket_index_and_handle_index(
         bucket_index, id);
   } else {
@@ -149,6 +150,7 @@ mem_handle::id_t HandlesMap::Insert(size_t size, hpuStream_t stream) {
       return mem_handle::invalid_handle;
     }
     handles_[bucket_index].emplace_back(size, stream);
+    handles_[bucket_index].back().generation_ = ++next_generation_;
     auto id_inside_bucket = handles_[bucket_index].size() - 1;
     check_id_overflow(id_inside_bucket, size, offset_bits);
     return create_memhandle_from_bucket_index_and_handle_index(
@@ -168,6 +170,14 @@ void HandlesMap::SetPtrSize(mem_handle::id_t id, HandlesMap::PtrSize ptr_size) {
   uint64_t handle_index = get_handle_index(id);
   CheckId(handle_index, bucket_index);
   handles_[bucket_index][handle_index].ptr_size_ = ptr_size;
+  handles_[bucket_index][handle_index].generation_ = ++next_generation_;
+}
+
+uint64_t HandlesMap::GetGeneration(mem_handle::id_t id) const {
+  const auto bucket = get_bucket_index(id);
+  const auto index = get_handle_index(id);
+  if (bucket >= END_ || index >= handles_[bucket].size() || !handles_[bucket][index].active_) return 0;
+  return handles_[bucket][index].generation_;
 }
 
 void HandlesMap::Erase(mem_handle::id_t id) {
@@ -244,6 +254,7 @@ void HandlesMap::ResetHandlesMap(mem_handle::id_t id) {
   CheckId(handle_index, bucketIndex);
   if (handles_[bucketIndex][handle_index].active_) {
     handles_[bucketIndex][handle_index].reset_ = true;
+    handles_[bucketIndex][handle_index].generation_ = ++next_generation_;
     handles_[bucketIndex][handle_index].ptr_size_.size_ = 0;
     handles_[bucketIndex][handle_index].ptr_size_.ptr_ = nullptr;
   }

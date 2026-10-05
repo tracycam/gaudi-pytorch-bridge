@@ -128,6 +128,7 @@ device_memory::~device_memory() {
 // Note:: This is only in used defragementer where
 // we wanted to reset and start the degramenter test.
 void device_memory::reset_pool() {
+  relocation_generation_.fetch_add(1, std::memory_order_release);
   if (pool_strategy_ == pool_allocator::startegy_coalesce_stringent) {
     if (!threads_in_defragmenter_critical_section_->empty()) {
       PT_DEVMEM_DEBUG(
@@ -1067,15 +1068,35 @@ device_ptr_lock device_memory::lock_addresses(prepared_addresses& prepared) {
   {
     std::lock_guard<std::mutex> lock(defragmentation_mutex_);
     if (prepared.physical && prepared.generation == relocation_generation_.load(std::memory_order_acquire)) {
-      ++prepared.hits;
-      // Increment the same allocator pin counter before releasing its gate.
-      return {std::make_unique<defragment::CachedLock>(threads_in_defragmenter_critical_section_, prepared.physical)};
+      std::lock_guard<std::mutex> metadata_lock(mutex_);
+      bool unchanged = std::all_of(prepared.handle_generations.begin(), prepared.handle_generations.end(),
+          [this](const auto& item) { return handle2pointer_.GetGeneration(item.first) == item.second; });
+      if (unchanged) {
+        ++prepared.hits;
+        // A recycled abstract handle must never impersonate its old allocation.
+        // Unrelated allocation churn does not invalidate this address set.
+        return {std::make_unique<defragment::CachedLock>(threads_in_defragmenter_critical_section_, prepared.physical)};
+      }
     }
   }
   auto lease = lock_addresses(absl::Span<const device_ptr>(prepared.addresses));
   // Do not reacquire the defrag gate while holding a lease: another thread
   // could be holding that gate waiting for this very lease to complete.
   prepared.physical = std::make_shared<const std::vector<device_ptr>>(lease.begin(), lease.end());
+  if (pool_strategy_ == pool_allocator::startegy_coalesce_stringent) {
+    if (prepared.handle_generations.empty()) {
+      std::vector<mem_handle::id_t> handles;
+      for (auto address : prepared.addresses) {
+        auto handle = mem_handle::reinterpret_from_pointer(address);
+        if (handle.is_valid()) handles.push_back(handle.id());
+      }
+      std::sort(handles.begin(), handles.end());
+      handles.erase(std::unique(handles.begin(), handles.end()), handles.end());
+      for (auto handle : handles) prepared.handle_generations.emplace_back(handle, 0);
+    }
+    std::lock_guard<std::mutex> metadata_lock(mutex_);
+    for (auto& item : prepared.handle_generations) item.second = handle2pointer_.GetGeneration(item.first);
+  }
   prepared.generation = relocation_generation_.load(std::memory_order_acquire);
   ++prepared.misses;
   return lease;

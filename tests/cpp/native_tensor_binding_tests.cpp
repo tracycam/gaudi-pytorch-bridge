@@ -10,6 +10,24 @@
 #include "backend/habana_device/NativeDependencyPlan.h"
 #include "backend/kernel/hpu_habana_cache.h"
 #include "backend/synapse_helpers/event_addresses.h"
+#include "backend/synapse_helpers/mem_handle.h"
+
+TEST(NativeAddressGenerationTest, RecycledHandleCannotReuseAnOldTranslation) {
+  synapse_helpers::HandlesMap map;
+  auto first = map.Insert(128);
+  auto first_generation = map.GetGeneration(first);
+  map.SetPtrSize(first, {reinterpret_cast<void*>(4096),128,0});
+  auto mapped_generation = map.GetGeneration(first);
+  EXPECT_GT(mapped_generation, first_generation);
+  map.Erase(first);
+  EXPECT_EQ(map.GetGeneration(first), 0);
+  auto recycled = map.Insert(128);
+  EXPECT_EQ(recycled, first);
+  EXPECT_GT(map.GetGeneration(recycled), mapped_generation);
+  auto before_reset = map.GetGeneration(recycled);
+  map.ResetHandlesMap(recycled);
+  EXPECT_GT(map.GetGeneration(recycled), before_reset);
+}
 
 TEST(NativeEventAddressesTest, SupersededAddressesPreserveTheRemainingSet) {
   for (size_t count : {size_t(1), size_t(63), size_t(64), size_t(4096)}) {
