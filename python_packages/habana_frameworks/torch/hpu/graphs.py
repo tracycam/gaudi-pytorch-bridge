@@ -562,8 +562,7 @@ def _input_hash(obj, autocast):
         return hash(tuple((k, tuple(_hpu_C.graph_input_hash(v_el, autocast, _input_hash) for v_el in v))
                           for k, v in obj.items()))
     elif is_dataclass(obj):
-        return hash(tuple((field.name, _hpu_C.graph_input_hash(getattr(obj, field.name), autocast, _input_hash))
-                          for field in fields(obj)))
+        return _hpu_C.graph_dataclass_hash(obj, fields(obj), autocast, _input_hash)
     else:
         return hash((obj, autocast))
 
@@ -589,8 +588,7 @@ def _copy_to(dst, src, skip_identity):
         for d, s in zip(dst, src, strict=False):
             _copy_to(d, s, skip_identity)
     elif is_dataclass(dst):
-        for field in fields(dst):
-            _copy_to(getattr(dst, field.name), getattr(src, field.name), skip_identity)
+        _hpu_C.graph_copy_dataclass(dst, src, fields(dst), skip_identity, _copy_to)
     elif torch.is_tensor(dst):
         if not skip_identity or dst is not src:
             dst.copy_(src, non_blocking=True)

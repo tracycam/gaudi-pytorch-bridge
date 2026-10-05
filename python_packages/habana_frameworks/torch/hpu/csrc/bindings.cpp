@@ -107,6 +107,45 @@ Py_hash_t graph_input_hash(py::handle value, bool autocast, const py::function& 
   }
   return fallback(value, autocast).cast<Py_hash_t>();
 }
+
+Py_hash_t graph_dataclass_hash(
+    py::handle value,
+    const py::tuple& fields,
+    bool autocast,
+    const py::function& fallback) {
+  // fields() and getattr retain Python's dataclass/descriptor semantics. Walk
+  // all children here instead of crossing the Python/C++ boundary per field.
+  py::tuple result(fields.size());
+  size_t index = 0;
+  for (py::handle field : fields) {
+    auto name = field.attr("name");
+    result[index++] = py::make_tuple(
+        name, py::int_(graph_input_hash(value.attr(name), autocast, fallback)));
+  }
+  return py::hash(result);
+}
+
+void graph_copy_dataclass(
+    py::handle dst,
+    py::handle src,
+    const py::tuple& fields,
+    bool skip_identity,
+    const py::function& fallback) {
+  for (py::handle field : fields) {
+    auto name = field.attr("name");
+    py::object d = dst.attr(name);
+    py::object s = src.attr(name);
+    if (skip_identity && d.is(s) &&
+        (THPVariable_CheckExact(d.ptr()) || PyDict_CheckExact(d.ptr()) ||
+         PyList_CheckExact(d.ptr()) || PyTuple_CheckExact(d.ptr()))) continue;
+    // Python copy_to ignores scalar values, but still rejects type changes.
+    // Subclasses and custom objects keep the original recursive implementation.
+    if (Py_TYPE(d.ptr()) == Py_TYPE(s.ptr()) &&
+        (d.is_none() || PyBool_Check(d.ptr()) || PyLong_CheckExact(d.ptr()) ||
+         PyFloat_CheckExact(d.ptr()) || PyUnicode_CheckExact(d.ptr()))) continue;
+    fallback(d, s, skip_identity);
+  }
+}
 } // namespace
 
 void hpu_init() {
@@ -331,6 +370,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   });
   m.def("get_view_hash", &tensor_view_hash);
   m.def("graph_input_hash", &graph_input_hash);
+  m.def("graph_dataclass_hash", &graph_dataclass_hash);
+  m.def("graph_copy_dataclass", &graph_copy_dataclass);
   py::class_<at::hpu::HPUGraph>(m, "HPUGraph").def(pybind11::init());
   // Graph operations may wait for the HCCL queue or event cleanup. Cleanup
   // can decref Python-backed Tensors, so no graph lock may be acquired while

@@ -99,6 +99,35 @@ class InputTraversalTest(unittest.TestCase):
         with self.assertRaises(RecursionError):
             graphs.input_hash(value)
 
+    def test_dataclass_attribute_order_and_normal_copy_version(self):
+        events = []
+        @dataclass
+        class Tracked(Metadata):
+            def __getattribute__(self, name):
+                if name in ('positions', 'page'):
+                    events.append((id(self), name))
+                return object.__getattribute__(self, name)
+        value = Tracked(torch.arange(4), 7)
+        reference = legacy_hash(value, False)
+        expected = list(events); events.clear()
+        self.assertEqual(reference, graphs._hpu_C.graph_input_hash(value, False, graphs._input_hash))
+        self.assertEqual(events, expected)
+        tensor = torch.zeros(4)
+        destination, source = Tracked(tensor, 7), Tracked(tensor, 7)
+        version = tensor._version; events.clear()
+        graphs.copy_to(destination, source)
+        self.assertEqual(tensor._version, version+1)
+        self.assertEqual(events, [(id(destination),'positions'),(id(source),'positions'),
+                                  (id(destination),'page'),(id(source),'page')])
+        with torch.inference_mode(), self.assertRaisesRegex(AssertionError, 'Type mismatch'):
+            graphs.copy_to(Metadata(tensor, 7), Metadata(tensor, '7'))
+
+    def test_recursive_dataclass_is_bounded(self):
+        value = Metadata(None, 0)
+        value.positions = value
+        with self.assertRaises(RecursionError):
+            graphs.input_hash(value)
+
 
 if __name__ == '__main__':
     unittest.main()
