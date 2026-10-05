@@ -3,6 +3,8 @@
 2026-10-04，续中场诊断。用户要求从第一性原理检查 bridge 自身及两套原生
 执行器中可合入的能力，要求根本、通用、清晰、可靠。本轮继续源码分析；没有
 恢复设备实验，没有把下列候选的收益写成实测。
+随后用户要求继续，已实现和验收部分 prepared launch、关闭日志的参数构造及 CPU
+诊断，见 [续行结果](RESULTS-PREPARED-LAUNCH-20261004.zh-CN.md)。以下其余项仍是候选。
 
 审计源码：bridge `72b41f885`，kernel/历史执行器仓库 `cdbbde9`。
 已验证模型性能仍为约 49 → 75 TPS，见 [中场记录](MIDPOINT-20261004.zh-CN.md)。
@@ -159,6 +161,11 @@ slot 满才背压，异常经现有同步点回传，不另起线程池或第二
 整计划 `future.get()` 也没局部释放，底层部分函数已有 AutoNoGIL。审计 C++ 调用链
 与 Python 回调/析构后可在合适范围释放。它影响同一进程的 Python 线程，不能
 声称它直接解释 8 个独立 rank 的差距。
+
+尤其不能直接在持有 HPUGraph/plan mutex 的 `future.get()` 附近局部释放 GIL：
+另一个 Python 线程可能持 GIL 等同一 mutex，而当前线程仍持 mutex 等重新取得
+GIL，形成死锁。应先审核全部入口的锁/GIL 顺序、fallback Python 回调与析构；
+尚未实现，不把局部 AutoNoGIL 当作现成优化。
 
 ## 6. 压缩我们自己的重复校验
 

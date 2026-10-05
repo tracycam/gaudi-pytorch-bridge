@@ -1,7 +1,8 @@
 # Bridge 内部编译计划与重放实现
 
-最新状态见 [中场诊断与恢复方向](MIDPOINT-20261004.zh-CN.md)：已暂停；503 追加优化
-尚无确定整模型增益，HEAD 的 CPU profiler 改动未验收。本文主体描述 413 核心检查点。
+最新状态见 [prepared launch 续行检查点](RESULTS-PREPARED-LAUNCH-20261004.zh-CN.md)：
+实验已恢复，CPU profiler 已验收，完整 70 层 B1 约 77 TPS；90 TPS 尚未达到。
+本文主体保留 413 核心实现，追加实现、wheel 身份和限制以最新检查点为准。
 
 应用继续使用原有 `HPUGraph` / `wrap_in_hpu_graph` API。执行计划是 bridge 的内部对象，
 没有新增 Python 执行器、模型专用重放入口或部署时改源码的脚本。普通路径已完成
@@ -15,7 +16,9 @@
 查询 Lazy 捕获状态；它只负责已有的底层提交与资源管理。
 
 每条计划命令拥有 recipe launcher 快照、stream、输入/中间/输出 Tensor、
-抽象 launch bindings、稳定名称及外部事件索引。seal 要求命令数等于捕获子图数，
+抽象 launch bindings、稳定名称及外部事件索引。prepared launch 描述提前保存静态
+尺寸修正和 allocator 地址槽，replay 只恢复地址，不复制整张表；原低层地址租约保留。
+seal 要求命令数等于捕获子图数，
 并检查静态 recipe。没有 compute recipe 的纯 collective 命令也可接纳。
 
 ## 绑定：输入值可变，分配和槽位不能偷偷变化

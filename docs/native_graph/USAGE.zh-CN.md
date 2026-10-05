@@ -1,13 +1,15 @@
 # 使用 bridge 内部编译计划
 
-2026-10-04 已按用户要求暂停。413/503 是已构建的检查点；当前 HEAD 的 profiler
-改动尚未验收。版本区别和未完成事项见 [中场诊断](MIDPOINT-20261004.zh-CN.md)。
+2026-10-04 用户已要求继续，构建与实验恢复。追加 prepared launch 和 CPU-only
+profiler 已验收；版本区别、性能及未完成事项见
+[续行检查点](RESULTS-PREPARED-LAUNCH-20261004.zh-CN.md)。
 
 这是原 `HPUGraph` 同步重放的内部快路径，应用仍使用 Habana/PyTorch 的公开图 API。
 无需导入 gaudi-kernels 的 Graph runtime 或加载旧 `libe1` 执行 hook。
 
 当前验证环境是 Gaudi2、SDK 1.24.1 系列、Python 3.12、Torch
-`2.11.0a0+git009b5f6`。候选 wheel 是 `1.24.1+git413e535ce`。
+`2.11.0a0+git009b5f6`。最新完整配对检查点 wheel 是 `1.24.1+git487b3889c`；
+后续 wheel 的验收状态以续行检查点为准，不以 Git HEAD 代替。
 这只是已经验证的环境组合；没有宣称跨 SDK/Torch ABI 通用。
 
 ## 普通应用
