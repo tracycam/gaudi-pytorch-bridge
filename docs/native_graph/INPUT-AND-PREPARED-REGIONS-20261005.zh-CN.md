@@ -137,3 +137,18 @@ SDK 提交，reset 和 drain 成功，无设备 reset。
 这是验收统计的缺陷。新增按命令/compute/collective 计数，以及带命令索引、
 绑定类型和 Tensor ID 的区段拒绝原因，先定位再修复；不再以 region_count>0
 作为模型覆盖门。
+
+
+两层 `coverage2-m` 在 `c7a2a1fea` 上复现了精确拒绝原因：
+`commands 7..11: command 8: non-data binding type=1 id=18446744073709551615 name=14`。
+该 Tensor ID 是 `INVALID_SYN_TENSOR_ID`，绑定已被编译器删除，却仍残留于
+原 launch 参数向量。依赖审计早已跳过这一哨兵；区段 lowering 没有应用同一规则。
+
+修复 `ea40817c6` 仅在实例化时排除这些编译器删除的项。有效绑定的类型、
+地址、生命周期和外部事件规则不变。并非放宽 live shape Tensor 的准入。
+
+`lowered-collectives-n` 双卡安全门通过；`lowered2-n` B1/B2、页边界完整 logits
+通过。两层从 prepared 3/13 命令增至 8/13，可合并 collective 5/5，拒绝项为零。
+新测试选项 `--require-prepared-coverage` 要求 8 rank 真正执行 prepared 命令，
+且全部已准入 serial collective 均有 prepared adapter。70 层 `lowered70-n`
+正在验证，尚不宣称达到 90 TPS。
