@@ -10,11 +10,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device-replay', action='store_true')
     args = parser.parse_args()
+    # Importing the bridge sets its normal profile_api[_light] marker. Reject
+    # an externally configured hardware profile before that initialization.
+    assert not os.getenv('HABANA_PROFILE'), 'probe must start without a hardware profile configuration'
     import torch
     import habana_frameworks.torch as ht
     from habana_frameworks.torch import _hpu_C
     from habana_frameworks.torch.activity_profiler.activity_profiler import DebugActivity
-    assert not os.getenv('HABANA_PROFILE'), 'CPU-only probe must not enable hardware profiling'
     output = Path(os.environ.get('PROBE_OUT', '.'))
     initially_initialized = torch.hpu.is_initialized()
     with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU],
@@ -25,7 +27,10 @@ def main():
     profile.export_chrome_trace(str(output/'cpu-only.json'))
     cpu_events = json.loads((output/'cpu-only.json').read_text())['traceEvents']
     assert any(e.get('name') == 'aten::add' for e in cpu_events)
-    record = dict(status='PASS', cpu_event_count=len(cpu_events), hardware_source=False)
+    record = dict(status='PASS', cpu_event_count=len(cpu_events), hardware_source=False,
+                  hpu_initialized_before_cpu_trace=initially_initialized,
+                  hpu_initialized_after_cpu_trace=torch.hpu.is_initialized(),
+                  profile_api_marker=os.getenv('HABANA_PROFILE'))
     if args.device_replay:
         x = torch.ones((8, 8), device='hpu')
         ht.core.mark_step()
