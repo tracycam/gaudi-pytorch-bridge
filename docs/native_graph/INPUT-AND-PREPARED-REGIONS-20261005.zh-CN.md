@@ -123,3 +123,17 @@ SDK 提交，reset 和 drain 成功，无设备 reset。
 90 TPS 需要 11.1111ms，当前候选还差约 0.6237ms/步。下一诊断在独立的
 4K 检索问答 fixture 上复测并检查生成答案，CPU trace 放在计时完成之后。
 不以设备或 CPU 局部时间的倒数冒充真实模型 TPS。
+
+
+## 覆盖审计纠正：此前只证明进入了一个小区段
+
+`retrieval70-l` 的稳态 CPU trace 揭示前述 region 计数不足以证明模型覆盖：
+每步 286 个命令，control 为 286 次普通 Launch；candidate 仍为 283 次
+普通 Launch，只有 3 个命令进入 PreparedRegionSubmit。候选区段约 91us
+（带 profiler，仅用于归因），不是整模型提交主体。
+
+因此“1004 次 prepared replay、1003 次缓存命中”只证明小区段运行，
+**不能用此前的无收益结果否定大区段预准备或缓存，也不能宣称主路径已迁入。**
+这是验收统计的缺陷。新增按命令/compute/collective 计数，以及带命令索引、
+绑定类型和 Tensor ID 的区段拒绝原因，先定位再修复；不再以 region_count>0
+作为模型覆盖门。
