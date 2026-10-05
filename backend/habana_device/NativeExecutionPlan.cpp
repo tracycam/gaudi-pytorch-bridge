@@ -64,22 +64,31 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
 
   static std::shared_ptr<PreparedRegionProgram> compile(
       const std::vector<RecipeCommand>& commands, size_t first, size_t last,
-      const std::vector<RetainedTensorBinding>& leases) {
+      const std::vector<RetainedTensorBinding>& leases, std::string& rejection) {
     auto result = std::make_shared<PreparedRegionProgram>();
     result->calls.reserve(last-first+1);
     std::vector<std::vector<uint64_t>> bindings;
     for (size_t i=first; i<=last; ++i) {
+      auto unsupported = [&](std::string reason) -> std::shared_ptr<PreparedRegionProgram> {
+        rejection = "commands " + std::to_string(first) + ".." + std::to_string(last) +
+            ": command " + std::to_string(i) + ": " + std::move(reason);
+        return nullptr;
+      };
       const auto& command = commands[i];
       Call call;
       call.owner = command.launcher;
       std::vector<uint64_t> pointers;
       if (command.access.compute && !command.access.collectives && command.external_events.empty()) {
-        if (!call.owner->recipe_ || call.owner->recipe_->graph_is_empty_) return nullptr;
+        if (!call.owner->recipe_ || call.owner->recipe_->graph_is_empty_)
+          return unsupported("missing or empty compute recipe");
         const auto& source = command.live_bindings;
         call.tensors.resize(source.size());
         call.names.reserve(source.size());
         for (const auto& tensor : source) {
-          if (tensor.tensorType != DATA_TENSOR) return nullptr;
+          if (tensor.tensorType != DATA_TENSOR)
+            return unsupported("non-data binding type=" + std::to_string(tensor.tensorType) +
+                " id=" + std::to_string(tensor.tensorId) + " name=" +
+                (tensor.tensorName ? tensor.tensorName : ""));
           call.names.emplace_back(tensor.tensorName ? tensor.tensorName : "");
           pointers.push_back(tensor.pTensorAddress);
         }
@@ -93,9 +102,9 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
         result->workspace_size = std::max(result->workspace_size, size_t(call.owner->workspace_size_));
       } else if (!command.access.compute && command.access.collectives == 1) {
         call.collective = call.owner->collective_kernels_info_->PrepareReplayCall();
-        if (!call.collective) return nullptr;
+        if (!call.collective) return unsupported("collective has no prepared adapter");
         pointers = {call.collective->input, call.collective->output};
-      } else return nullptr;
+      } else return unsupported("mixed, external-event or unsupported command");
       result->addresses.insert(result->addresses.end(), pointers.begin(), pointers.end());
       result->dependencies.insert(result->dependencies.end(), command.access.reads.begin(), command.access.reads.end());
       result->dependencies.insert(result->dependencies.end(), command.access.writes.begin(), command.access.writes.end());
@@ -507,6 +516,7 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
         communicators.push_back(std::move(communicator));
       }
       for (const auto& region : impl_->dependencies.serial_regions(accesses, communicator_keys)) {
+        std::string rejection;
         std::vector<synapse_helpers::device_ptr> addresses;
         size_t workspace = 0;
         for (size_t i=region.collectives.front(); i<=region.collectives.back(); ++i) {
@@ -518,8 +528,17 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
                                   communicators[region.collectives.front()],
                                   std::make_shared<synapse_helpers::ReplayEventBatch::Footprint>(std::move(addresses)),
                                   workspace, PreparedRegionProgram::compile(impl_->commands,
-                                      region.collectives.front(), region.collectives.back(), impl_->leases)});
+                                      region.collectives.front(), region.collectives.back(), impl_->leases, rejection)});
         impl_->stats.prepared_regions += bool(impl_->regions.back().program);
+        if (impl_->regions.back().program) {
+          for (const auto& call : impl_->regions.back().program->calls) {
+            ++impl_->stats.prepared_commands;
+            impl_->stats.prepared_compute += !call.collective;
+            impl_->stats.prepared_collectives += bool(call.collective);
+          }
+        } else {
+          impl_->stats.prepared_rejections.push_back(std::move(rejection));
+        }
         impl_->stats.coalesced_collectives += region.collectives.size();
       }
     }
@@ -620,6 +639,7 @@ bool NativeExecutionPlan::replay() {
             if (prepared_allowed && impl_->regions[region_index].program) {
               impl_->regions[region_index].program->replay(device, compute);
               ++impl_->stats.prepared_region_replays;
+              impl_->stats.prepared_replayed_commands += impl_->regions[region_index].program->calls.size();
               index = impl_->regions[region_index].last;
               leave();
               ++region_index;

@@ -349,6 +349,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     result["compiled_regions"] = stats.compiled_regions;
     result["prepared_regions"] = stats.prepared_regions;
     result["prepared_region_replays"] = stats.prepared_region_replays;
+    result["prepared_commands"] = stats.prepared_commands;
+    result["prepared_compute"] = stats.prepared_compute;
+    result["prepared_collectives"] = stats.prepared_collectives;
+    result["prepared_replayed_commands"] = stats.prepared_replayed_commands;
+    result["prepared_rejections"] = stats.prepared_rejections;
     result["address_cache_hits"] = stats.address_cache_hits;
     result["address_cache_misses"] = stats.address_cache_misses;
     result["replays"] = stats.replays;

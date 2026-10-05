@@ -29,6 +29,11 @@ struct NativeReplayStats {
   bool compiled_regions = false;
   size_t prepared_regions = 0;
   size_t prepared_region_replays = 0;
+  size_t prepared_commands = 0;
+  size_t prepared_compute = 0;
+  size_t prepared_collectives = 0;
+  size_t prepared_replayed_commands = 0;
+  std::vector<std::string> prepared_rejections;
   size_t address_cache_hits = 0, address_cache_misses = 0;
   bool ready = false;
   bool failed = false;
