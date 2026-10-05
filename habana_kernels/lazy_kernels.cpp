@@ -1085,58 +1085,69 @@ void foreach_copy_hpu_lazy_(
     at::TensorList self,
     at::TensorList sources,
     bool non_blocking) {
-  habana_lazy::NoAccThread no_acc_thread;
-  auto admissible = [&] {
-    if (!c10::InferenceMode::is_enabled() || !non_blocking || self.size() < 2 || self.size() > 128 ||
-        self.size() != sources.size() ||
-        get_device_lazy_execution_context()->getCapturing() ||
-        get_habana_lazy_executor().getExecutionMode() == kLOWERING) return false;
-    std::unordered_set<const c10::StorageImpl*> destinations;
-    size_t total_bytes = 0;
-    for (size_t i=0; i<self.size(); ++i) {
-      const auto& dst = self[i];
-      const auto& src = sources[i];
-      if (!dst.defined() || !src.defined() || !src.device().is_cpu() ||
-          dst.device().type() != c10::DeviceType::HPU ||
-          dst.device() != self[0].device() || dst.requires_grad() || src.requires_grad() ||
-          !dst.is_contiguous() || !src.is_contiguous() || dst.storage_offset() != 0 ||
-          dst.suggest_memory_format() != c10::MemoryFormat::Contiguous ||
-          src.suggest_memory_format() != c10::MemoryFormat::Contiguous ||
-          !dst.sizes().equals(src.sizes()) || dst.scalar_type() != src.scalar_type() ||
-          !dst.numel() || habana::is_tensor_const(src)) return false;
-      // Long/double have a separate physical representation on Gaudi. Leave
-      // them, broadcasting and dtype conversion to the existing copy kernel.
-      if (src.scalar_type() != at::kInt && src.scalar_type() != at::kFloat &&
-          src.scalar_type() != at::kBFloat16) return false;
-      // This is a small-input optimization. Large/pinned transfers retain the
-      // ordinary path instead of paying for a large additional host snapshot.
-      const auto bytes = src.nbytes();
-      if (bytes > 64*1024 || total_bytes > 1024*1024-bytes) return false;
-      total_bytes += bytes;
-      auto lazy = TryGetHbLazyTensor(dst);
-      if (!lazy || !lazy->isStorageAttached() || lazy->IsExecutionInProgress() ||
-          lazy->getDataPtr()->stride_params.has_value() ||
-          !lazy->CurrentIrValue() || !lazy->CurrentIrValue().IsHpuInputNode()) return false;
-      auto data = lazy->EvaluateTensorData();
-      if (!data.defined() || !data.has_storage() ||
-          data.scalar_type() != src.scalar_type() ||
-          !destinations.insert(data.storage().unsafeGetStorageImpl()).second) return false;
-    }
-    return true;
-  };
-  if (!admissible()) {
+  // Non-H2D/training calls retain the original accumulation-thread behavior.
+  if (!c10::InferenceMode::is_enabled() || !non_blocking || self.size() < 2 ||
+      self.size() > 128 || self.size() != sources.size() ||
+      !std::all_of(sources.begin(), sources.end(), [](const auto& t) {
+        return t.defined() && t.device().is_cpu();
+      }) || !std::all_of(self.begin(), self.end(), [](const auto& t) {
+        return t.defined() && t.device().type() == c10::DeviceType::HPU;
+      })) {
     at::native::foreach_tensor_copy_list_kernel_slow_(self, sources, non_blocking);
     return;
   }
-  PT_BRIDGE_LAMBDA_BEGIN("BatchedHostToDeviceCopy");
-  std::vector<std::pair<at::Tensor, at::Tensor>> batch;
-  batch.reserve(self.size());
-  for (size_t i=0; i<self.size(); ++i) {
-    auto dst = self[i];
-    copy_hpu_lazy_H2D(dst, sources[i], non_blocking, &batch);
-  }
-  habana_helpers::copy_scalars_to_device(batch, c10::hpu::getCurrentHPUStream());
-  flush_op();
+  const bool copied = [&] {
+    habana_lazy::NoAccThread no_acc_thread;
+    auto admissible = [&] {
+      if (get_device_lazy_execution_context()->getCapturing() ||
+          get_habana_lazy_executor().getExecutionMode() == kLOWERING) return false;
+      std::unordered_set<const c10::StorageImpl*> destinations;
+      size_t total_bytes = 0;
+      for (size_t i=0; i<self.size(); ++i) {
+        const auto& dst = self[i];
+        const auto& src = sources[i];
+        if (!dst.defined() || !src.defined() || !src.device().is_cpu() ||
+            dst.device().type() != c10::DeviceType::HPU ||
+            dst.device() != self[0].device() || dst.requires_grad() || src.requires_grad() ||
+            !dst.is_contiguous() || !src.is_contiguous() || dst.storage_offset() != 0 ||
+            dst.suggest_memory_format() != c10::MemoryFormat::Contiguous ||
+            src.suggest_memory_format() != c10::MemoryFormat::Contiguous ||
+            !dst.sizes().equals(src.sizes()) || dst.scalar_type() != src.scalar_type() ||
+            !dst.numel() || habana::is_tensor_const(src)) return false;
+        // Long/double have a separate physical representation on Gaudi. Leave
+        // them, broadcasting and dtype conversion to the existing copy kernel.
+        if (src.scalar_type() != at::kInt && src.scalar_type() != at::kFloat &&
+            src.scalar_type() != at::kBFloat16) return false;
+        // This is a small-input optimization. Large transfers retain the
+        // ordinary path instead of paying for a large additional host snapshot.
+        const auto bytes = src.nbytes();
+        if (bytes > 64*1024 || total_bytes > 1024*1024-bytes) return false;
+        total_bytes += bytes;
+        auto lazy = TryGetHbLazyTensor(dst);
+        if (!lazy || !lazy->isStorageAttached() || lazy->IsExecutionInProgress() ||
+            lazy->getDataPtr()->stride_params.has_value() ||
+            !lazy->CurrentIrValue() || !lazy->CurrentIrValue().IsHpuInputNode()) return false;
+        auto data = lazy->EvaluateTensorData();
+        if (!data.defined() || !data.has_storage() ||
+            data.scalar_type() != src.scalar_type() ||
+            !destinations.insert(data.storage().unsafeGetStorageImpl()).second) return false;
+      }
+      return true;
+    };
+    if (!admissible()) return false;
+    PT_BRIDGE_LAMBDA_BEGIN("BatchedHostToDeviceCopy");
+    std::vector<std::pair<at::Tensor, at::Tensor>> batch;
+    batch.reserve(self.size());
+    for (size_t i=0; i<self.size(); ++i) {
+      auto dst = self[i];
+      copy_hpu_lazy_H2D(dst, sources[i], non_blocking, &batch);
+    }
+    habana_helpers::copy_scalars_to_device(batch, c10::hpu::getCurrentHPUStream());
+    flush_op();
+    return true;
+  }();
+  if (!copied)
+    at::native::foreach_tensor_copy_list_kernel_slow_(self, sources, non_blocking);
 }
 
 Tensor& copy_hpu_lazy_(Tensor& self, const Tensor& src, bool non_blocking) {
