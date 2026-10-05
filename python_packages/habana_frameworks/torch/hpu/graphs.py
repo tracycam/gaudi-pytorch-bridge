@@ -559,9 +559,11 @@ def _input_hash(obj, autocast):
     elif torch.is_tensor(obj):
         return hash((obj.dtype, obj.shape, _hpu_C.get_view_hash(obj), autocast))
     elif isinstance(obj, collections.UserDict):
-        return hash(tuple((k, tuple(_input_hash(v_el, autocast) for v_el in v)) for k, v in obj.items()))
+        return hash(tuple((k, tuple(_hpu_C.graph_input_hash(v_el, autocast, _input_hash) for v_el in v))
+                          for k, v in obj.items()))
     elif is_dataclass(obj):
-        return hash(tuple((field.name, _input_hash(getattr(obj, field.name), autocast)) for field in fields(obj)))
+        return hash(tuple((field.name, _hpu_C.graph_input_hash(getattr(obj, field.name), autocast, _input_hash))
+                          for field in fields(obj)))
     else:
         return hash((obj, autocast))
 

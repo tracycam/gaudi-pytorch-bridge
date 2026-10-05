@@ -78,6 +78,11 @@ Py_hash_t graph_input_hash(py::handle value, bool autocast, const py::function& 
     }
     ~RecursionGuard() { Py_LeaveRecursiveCall(); }
   } guard;
+  if (value.is_none() || PyBool_Check(value.ptr()) ||
+      PyLong_CheckExact(value.ptr()) || PyFloat_CheckExact(value.ptr()) ||
+      PyUnicode_CheckExact(value.ptr())) {
+    return py::hash(py::make_tuple(value, autocast));
+  }
   if (PyDict_CheckExact(value.ptr())) {
     return graph_input_hash(py::tuple(value.attr("items")()), autocast, fallback);
   }

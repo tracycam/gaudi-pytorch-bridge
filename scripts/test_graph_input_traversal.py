@@ -1,6 +1,6 @@
 """CPU-only semantic checks, run with the built bridge wheel installed."""
 import collections
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +12,22 @@ from habana_frameworks.torch.hpu import graphs
 class Metadata:
     positions: object
     page: int
+
+
+def legacy_hash(value, autocast):
+    """Independent, frozen pre-optimization Python cache-key contract."""
+    if isinstance(value, dict):
+        return legacy_hash(tuple(value.items()), autocast)
+    if isinstance(value, list) or (isinstance(value, tuple) and not isinstance(value, torch.Size)):
+        return hash((tuple(legacy_hash(item, autocast) for item in value), autocast))
+    if torch.is_tensor(value):
+        return hash((value.dtype, value.shape, graphs._hpu_C.get_view_hash(value), autocast))
+    if isinstance(value, collections.UserDict):
+        return hash(tuple((key, tuple(legacy_hash(item, autocast) for item in items))
+                          for key, items in value.items()))
+    if is_dataclass(value):
+        return hash(tuple((field.name, legacy_hash(getattr(value, field.name), autocast)) for field in fields(value)))
+    return hash((value, autocast))
 
 
 class InputTraversalTest(unittest.TestCase):
@@ -66,7 +82,15 @@ class InputTraversalTest(unittest.TestCase):
                   torch.Size([2, 3]), CustomList(tensors), torch.nn.Parameter(tensors[0])]
         for autocast in (False, True):
             for value in values:
-                self.assertEqual(graphs._input_hash(value, autocast),
+                self.assertEqual(legacy_hash(value, autocast),
+                    graphs._hpu_C.graph_input_hash(value, autocast, graphs._input_hash))
+
+    def test_scalar_fast_keys_and_nested_metadata_match_frozen_protocol(self):
+        scalar = [None, True, False, 0, 1, -1, 2**80, .5, -0., float('inf'), float('nan'), 'KV']
+        values = scalar + [Metadata({'values': scalar}, 7), collections.UserDict({'values': scalar})]
+        for autocast in (False, True):
+            for value in values:
+                self.assertEqual(legacy_hash(value, autocast),
                     graphs._hpu_C.graph_input_hash(value, autocast, graphs._input_hash))
 
     def test_recursive_input_raises_instead_of_exhausting_native_stack(self):
