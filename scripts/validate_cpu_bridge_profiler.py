@@ -45,7 +45,8 @@ def main():
                 with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU],
                         debug_activities=[DebugActivity.BRIDGE_FUNCTION_CALLS]) as profile:
                     for _ in range(16):
-                        graph.replay()
+                        with torch.profiler.record_function('HPUGraph.replay'):
+                            graph.replay()
                 assert torch.equal(y.cpu(), torch.full((8, 8), 14.))
             profile.export_chrome_trace(str(output/'bridge-replay-cpu.json'))
             events = json.loads((output/'bridge-replay-cpu.json').read_text())['traceEvents']
