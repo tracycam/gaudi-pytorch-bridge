@@ -71,6 +71,8 @@ class CollectiveKernelInfos {
   bool ReplayAccesses(
       std::vector<PtTensorInfoShared>& reads,
       std::vector<PtTensorInfoShared>& writes) const;
+  std::shared_ptr<habana::HcclCommunicator> SingleReplayCommunicator() const;
+  void SetReplayStream(synapse_helpers::stream* stream) const;
 
 
   void AddKernel(Info&& info) {

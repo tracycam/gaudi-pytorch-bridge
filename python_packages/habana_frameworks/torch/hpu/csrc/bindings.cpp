@@ -301,6 +301,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     result["serial_collectives"] = stats.serial_collectives;
     result["external_events"] = stats.external_events;
     result["incomplete_access_commands"] = stats.incomplete_access_commands;
+    result["coalesced_collectives"] = stats.coalesced_collectives;
+    result["coalesced_replays"] = stats.coalesced_replays;
     result["replays"] = stats.replays;
     result["ready"] = stats.ready;
     result["failed"] = stats.failed;

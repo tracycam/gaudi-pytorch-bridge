@@ -19,6 +19,8 @@ struct NativeReplayStats {
   size_t serial_collectives = 0;
   size_t external_events = 0;
   size_t incomplete_access_commands = 0;
+  size_t coalesced_collectives = 0;
+  size_t coalesced_replays = 0;
   bool ready = false;
   bool failed = false;
   std::string reason;

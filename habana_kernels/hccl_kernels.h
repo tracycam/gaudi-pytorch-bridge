@@ -18,6 +18,7 @@
 
 namespace synapse_helpers {
 using event_done_callback = std::function<void()>;
+class stream;
 }
 
 namespace habana {
@@ -75,6 +76,14 @@ class CollectiveOperator : public habana::HabanaOperator {
     return false;
   }
 
+  const std::shared_ptr<HcclCommunicator>& ReplayCommunicator() const {
+    return replay_communicator_;
+  }
+  void SetReplayStream(synapse_helpers::stream* stream) {
+    HABANA_ASSERT(inline_submission_ && replay_communicator_);
+    replay_stream_ = stream;
+  }
+
   virtual void Serialize(std::ostream& os) const = 0;
   virtual void Deserialize(std::istream& is) = 0;
 
@@ -83,6 +92,9 @@ class CollectiveOperator : public habana::HabanaOperator {
   c10::ScalarType scalar_type_;
   bool inline_submission_ = false;
   std::shared_ptr<HcclCommunicator> replay_communicator_;
+  // Only an owned replay snapshot may borrow a bridge stream. Never changes
+  // the ProcessGroup communicator's stream or an ordinary operator instance.
+  synapse_helpers::stream* replay_stream_ = nullptr;
 };
 
 class HcclBroadcastOperator : public CollectiveOperator {

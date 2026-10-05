@@ -11,6 +11,7 @@
 #include <utility>
 #include "backend/helpers/collective_kernel_info.h"
 #include "backend/helpers/tensor_info.h"
+#include "backend/synapse_helpers/hccl_communicator.h"
 #include "pytorch_helpers/habana_helpers/logging.h"
 
 namespace at::hpu {
@@ -85,6 +86,7 @@ struct NativeExecutionPlan::Impl {
   std::vector<size_t> boundary_leases;
   NativeReplayStats stats;
   NativeDependencyPlan dependencies;
+  std::shared_ptr<habana::HcclCommunicator> region_communicator;
 
   uint64_t allocation_key(uint64_t address, bool& complete) const {
     if (!address) {
@@ -160,6 +162,7 @@ void NativeExecutionPlan::reject(std::string reason) {
   impl_->leases_by_storage.clear();
   impl_->boundary_leases.clear();
   impl_->dependencies = {};
+  impl_->region_communicator.reset();
   impl_->stats.commands = 0;
   impl_->stats.collectives = 0;
   impl_->stats.raw_edges = 0;
@@ -169,6 +172,7 @@ void NativeExecutionPlan::reject(std::string reason) {
   impl_->stats.serial_collectives = 0;
   impl_->stats.external_events = 0;
   impl_->stats.incomplete_access_commands = 0;
+  impl_->stats.coalesced_collectives = 0;
 }
 
 void NativeExecutionPlan::append(
@@ -258,7 +262,7 @@ void NativeExecutionPlan::append(
     directions.emplace(tensor.tensorId, tensor.isInput != 0);
   }
   for (const auto& binding : bindings) {
-    if (!binding.pTensorAddress) {
+    if (!launcher.recipe_ || !binding.pTensorAddress) {
       continue;
     }
     auto direction = directions.find(binding.tensorId);
@@ -325,6 +329,29 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
       }
     }
     impl_->stats.serial_collectives = impl_->dependencies.serial_collectives.size();
+    // First adapter: all collectives must be strict adjacent RAW chains, use
+    // one communicator and have no partial readiness or unknown accesses.
+    // Independent/mixed/partial chains retain the original stream policy.
+    if (impl_->stats.collectives && !impl_->stats.external_events &&
+        !impl_->stats.incomplete_access_commands &&
+        impl_->stats.serial_collectives == impl_->stats.collectives &&
+        !GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
+      std::shared_ptr<habana::HcclCommunicator> communicator;
+      bool same = true;
+      for (auto index : impl_->dependencies.serial_collectives) {
+        auto candidate = impl_->commands[index].launcher
+                             ->collective_kernels_info_->SingleReplayCommunicator();
+        if (!candidate || (communicator && communicator != candidate)) {
+          same = false;
+          break;
+        }
+        communicator = std::move(candidate);
+      }
+      if (same) {
+        impl_->region_communicator = std::move(communicator);
+        impl_->stats.coalesced_collectives = impl_->stats.collectives;
+      }
+    }
     impl_->stats.ready = true;
   } else if (impl_->stats.reason.empty()) {
     reject("capture does not provide one compiled recipe per subgraph");
@@ -375,15 +402,50 @@ bool NativeExecutionPlan::replay() {
   try {
     auto submit = [&]() {
       PT_BRIDGE_LAMBDA_BEGIN("NativePlanSubmit");
-      for (auto& command : impl_->commands) {
-        // graph::launch mutates addresses to physical locked addresses. Reset the
-        // abstract bindings each time; never reuse a physical pointer from capture.
-        command.launcher->prepared_bindings_->launch->restore_addresses(
-            command.live_bindings);
-        command.launcher->Launch(
-            command.stream, command.inputs, command.intermediates,
-            command.outputs, command.live_bindings, command.external_events,
-            command.dma_inputs);
+      auto communicator = impl_->region_communicator;
+      auto& device = habana::HPUDeviceContext::get_device();
+      auto& compute = device.get_stream(impl_->commands.front().stream);
+      synapse_helpers::stream* communication = communicator
+          ? &communicator->getDeviceCtxt()->get_stream_fromhandle(
+                communicator->getCommStream()) : nullptr;
+      bool entered = false;
+      auto leave = [&]() {
+        if (entered) {
+          // Publish the mapped collective sequence back to the communicator's
+          // original FIFO before another ordinary HCCL job may run there.
+          device.record_and_wait_for_event(compute, *communication,
+                                           [communicator]() {});
+          entered = false;
+        }
+      };
+      try {
+        for (size_t index = 0; index < impl_->commands.size(); ++index) {
+          auto& command = impl_->commands[index];
+          if (communicator && command.access.collectives) {
+            if (!entered) {
+              device.record_and_wait_for_event(*communication, compute,
+                                               [communicator]() {});
+              entered = true;
+            }
+            command.launcher->collective_kernels_info_->SetReplayStream(&compute);
+          }
+          // graph::launch mutates addresses to physical locked addresses. Reset the
+          // abstract bindings each time; never reuse a physical pointer from capture.
+          command.launcher->prepared_bindings_->launch->restore_addresses(
+              command.live_bindings);
+          command.launcher->Launch(
+              command.stream, command.inputs, command.intermediates,
+              command.outputs, command.live_bindings, command.external_events,
+              command.dma_inputs);
+          if (communicator && index == impl_->dependencies.serial_collectives.back()) {
+            leave();
+          }
+        }
+      } catch (...) {
+        // A submitted prefix cannot be retried. Attempt to restore the stream
+        // order, then preserve the original error and poison the graph below.
+        try { leave(); } catch (...) {}
+        throw;
       }
     };
     if (impl_->stats.collectives) {
@@ -400,6 +462,7 @@ bool NativeExecutionPlan::replay() {
     throw;
   }
   ++impl_->stats.replays;
+  impl_->stats.coalesced_replays += static_cast<bool>(impl_->region_communicator);
   return true;
 }
 

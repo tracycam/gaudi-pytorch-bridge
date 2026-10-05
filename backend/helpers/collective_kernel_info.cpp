@@ -122,6 +122,18 @@ bool CollectiveKernelInfos::ReplayAccesses(
   return true;
 }
 
+std::shared_ptr<habana::HcclCommunicator>
+CollectiveKernelInfos::SingleReplayCommunicator() const {
+  return infos_.size() == 1 && infos_[0].kernel
+      ? infos_[0].kernel->ReplayCommunicator() : nullptr;
+}
+
+void CollectiveKernelInfos::SetReplayStream(synapse_helpers::stream* stream) const {
+  for (const auto& info : infos_) {
+    info.kernel->SetReplayStream(stream);
+  }
+}
+
 void CollectiveKernelInfos::ClearAllPtAndSynTensors() {
   for (const auto& kernel_info : infos_) {
     HABANA_ASSERT(kernel_info.kernel);

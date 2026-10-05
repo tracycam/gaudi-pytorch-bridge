@@ -182,7 +182,8 @@ void collective(
     synapse_helpers::event_done_callback done_cb,
     Fn fn,
     bool inline_submission = false,
-    std::shared_ptr<HcclCommunicator> retained_communicator = {}) {
+    std::shared_ptr<HcclCommunicator> retained_communicator = {},
+    synapse_helpers::stream* replay_stream = nullptr) {
   for (size_t i = 0; i < inputs.size(); ++i) {
     HABANA_ASSERT(
         devices.at(i) == 0,
@@ -213,7 +214,8 @@ void collective(
     auto comm = retained_communicator ? retained_communicator
                                      : HcclCommunicator::Get(communicator_ids.at(i));
     auto deviceCtxt = comm->getDeviceCtxt();
-    synStreamHandle collective_stream = comm->getCommStream();
+    synStreamHandle collective_stream = replay_stream
+        ? static_cast<synStreamHandle>(*replay_stream) : comm->getCommStream();
 
     auto input_storage_ptr =
         (synapse_helpers::device_ptr)inputs.at(i)->get_buffer_start();
@@ -221,7 +223,12 @@ void collective(
         (synapse_helpers::device_ptr)outputs.at(i)->get_buffer_start();
 
     std::vector<synapse_helpers::shared_event> event_lists = {};
-    if (GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
+    if (replay_stream) {
+      // This stream belongs to the bridge device, not the communicator's
+      // private stream map. Keep normal external buffer dependencies intact.
+      replay_stream->get_device().add_wait_events_on_stream(
+          {input_storage_ptr, output_storage_ptr}, *replay_stream);
+    } else if (GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
       // Prepare stream and get event lists
       event_lists = deviceCtxt->prepare_stream_and_get_events(
           collective_stream, input_storage_ptr);
@@ -261,6 +268,7 @@ void collective(
                  async = async,
                  done_cb = done_cb,
                  deviceCtxt = deviceCtxt,
+                 replay_stream = replay_stream,
                  event_lists = event_lists,
                  output_storage_ptr = output_storage_ptr,
                  pr = pr,
@@ -335,16 +343,23 @@ void collective(
       HABANA_ASSERT(
           hcclSuccess == hccl_result, "Collective call returned error");
       recipe_counter.increase();
-      deviceCtxt->submit_events(
-          collective_stream,
-          output_storage_ptr,
-          [resource_holder, &recipe_counter, done_cb,
+      auto completion = [resource_holder, &recipe_counter, done_cb,
            completion_communicator = std::move(completion_communicator)]() mutable {
             resource_holder.reset();
             recipe_counter.decrease_and_notify();
             done_cb();
             completion_communicator.reset();
-          });
+          };
+      if (replay_stream) {
+        // The mapped region also publishes use completion for its read input,
+        // so a graph-external stream cannot overwrite it while HCCL reads it.
+        replay_stream->get_device().register_producer_on_stream(
+            {input_storage_ptr, output_storage_ptr}, *replay_stream,
+            std::move(completion));
+      } else {
+        deviceCtxt->submit_events(
+            collective_stream, output_storage_ptr, std::move(completion));
+      }
       if (pr) {
         pr->set_value(hccl_result == hcclSuccess);
       }
@@ -711,7 +726,7 @@ void HcclAllreduceOperator::RunCollective(
         }
         return hccl_result;
       },
-      inline_submission_, replay_communicator_);
+      inline_submission_, replay_communicator_, replay_stream_);
 }
 
 void HcclReduceOperator::AllocateAndAddSynapseNode(
@@ -1028,7 +1043,7 @@ void HcclAllgatherOutOperator::RunCollective(
             stream);
         return hccl_result;
       },
-      inline_submission_, replay_communicator_);
+      inline_submission_, replay_communicator_, replay_stream_);
 }
 
 void HcclReduceScatterOutOperator::AllocateAndAddSynapseNode(
