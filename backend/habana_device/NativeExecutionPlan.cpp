@@ -57,6 +57,7 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
   };
   std::vector<Call> calls;
   std::vector<at::Tensor> retained;
+  std::vector<c10::Storage> storage_owners;
   std::vector<synapse_helpers::device_ptr> addresses, dependencies;
   size_t workspace_size = 0;
 
@@ -109,7 +110,12 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     for (size_t i=0; i<bindings.size(); ++i)
       for (auto address : bindings[i])
         result->calls[i].slots.push_back(std::lower_bound(result->addresses.begin(), result->addresses.end(), address)-result->addresses.begin());
-    for (const auto& lease : leases) result->retained.push_back(lease.tensor);
+    for (const auto& lease : leases) {
+      result->retained.push_back(lease.tensor);
+      // TensorImpl can be rebound after enqueue. Keep the captured Storage
+      // independently alive until the region's completion event fires.
+      result->storage_owners.push_back(lease.owner);
+    }
     return result;
   }
 
