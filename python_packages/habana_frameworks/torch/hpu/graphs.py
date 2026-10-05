@@ -545,37 +545,51 @@ class CachedParams:
 
 
 def input_hash(obj):
+    # Autocast is thread-local and constant for this traversal. Keep the exact
+    # existing nested key structure, without crossing Python/C++ for every leaf.
+    return _input_hash(obj, torch.hpu.is_autocast_hpu_enabled())
+
+
+def _input_hash(obj, autocast):
     if isinstance(obj, dict):
-        return input_hash(tuple(obj.items()))
+        return _input_hash(tuple(obj.items()), autocast)
     elif isinstance(obj, list) or (isinstance(obj, tuple) and not isinstance(obj, torch.Size)):
         # torch.Size is specialization of tuple, so we don't want extra recursion.
-        return hash((tuple(input_hash(el) for el in obj), torch.hpu.is_autocast_hpu_enabled()))
+        return hash((tuple(_input_hash(el, autocast) for el in obj), autocast))
     elif torch.is_tensor(obj):
-        return hash((obj.dtype, obj.shape, _hpu_C.get_view_hash(obj), torch.hpu.is_autocast_hpu_enabled()))
+        return hash((obj.dtype, obj.shape, _hpu_C.get_view_hash(obj), autocast))
     elif isinstance(obj, collections.UserDict):
-        return hash(tuple((k, tuple(input_hash(v_el) for v_el in v)) for k, v in obj.items()))
+        return hash(tuple((k, tuple(_input_hash(v_el, autocast) for v_el in v)) for k, v in obj.items()))
     elif is_dataclass(obj):
-        return hash(tuple((field.name, input_hash(getattr(obj, field.name))) for field in fields(obj)))
+        return hash(tuple((field.name, _input_hash(getattr(obj, field.name), autocast)) for field in fields(obj)))
     else:
-        return hash((obj, torch.hpu.is_autocast_hpu_enabled()))
+        return hash((obj, autocast))
 
 
 def copy_to(dst, src):
+    # Inference replay commonly passes the same persistent KV Tensor back to
+    # the graph. It already is the destination; no copy operator is necessary.
+    # Keep normal copy/version-counter behavior outside inference mode.
+    _copy_to(dst, src, torch.is_inference_mode_enabled())
+
+
+def _copy_to(dst, src, skip_identity):
     if type(dst) is not type(src):
         raise AssertionError("Type mismatch")
     if isinstance(dst, dict):
         for (dk, dv), (sk, sv) in zip(dst.items(), src.items(), strict=False):
             if not dk == sk:
                 raise AssertionError("Data mismatch")
-            copy_to(dv, sv)
+            _copy_to(dv, sv, skip_identity)
     elif isinstance(dst, list) or (isinstance(dst, tuple) and not isinstance(dst, torch.Size)):
         for d, s in zip(dst, src, strict=False):
-            copy_to(d, s)
+            _copy_to(d, s, skip_identity)
     elif is_dataclass(dst):
         for field in fields(dst):
-            copy_to(getattr(dst, field.name), getattr(src, field.name))
+            _copy_to(getattr(dst, field.name), getattr(src, field.name), skip_identity)
     elif torch.is_tensor(dst):
-        dst.copy_(src, non_blocking=True)
+        if not skip_identity or dst is not src:
+            dst.copy_(src, non_blocking=True)
 
 
 def get_user_input_tensor_list(inputs, tlist):
@@ -747,15 +761,16 @@ def wrapped_hpugraph_forward(
 
     CachedParams.cache_hits[h] = CachedParams.cache_hits.get(h, 0) + 1
     # use replayv1 here
-    input_tensor_list = get_user_input_tensor_list(inputs, ())
     if not disable_tensor_cache:
         # Copy the user inputs
         copy_to(cached.graph_inputs, inputs)
         if cached.have_h2d_tensor:
+            input_tensor_list = get_user_input_tensor_list(inputs, ())
             cached.graph.replay_with_inputs(input_tensor_list, asynchronous)
         else:
             cached.graph.replay(asynchronous)
     else:
+        input_tensor_list = get_user_input_tensor_list(inputs, ())
         matched_input_index = cached.graph.get_user_input_match_indices()
         graph_inputs = tuple(
             input_tensor_list[i] for i in range(len(input_tensor_list)) if i not in matched_input_index
