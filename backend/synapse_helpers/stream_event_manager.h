@@ -69,6 +69,10 @@ class stream_event_manager {
   void enqueue_wait_event(const std::string& event_id, stream& stream);
 
   shared_event get_wait_event(device_ptr device_address, stream& stream);
+  // Resolve a command's dependencies under one producer-map lock. Distinct
+  // tensors can share one completion event; return each event only once.
+  std::vector<shared_event> get_wait_events(
+      const std::vector<device_ptr>& device_addresses);
 
   /*! \brief Invokes blocking EventSynchronize for a given tenor pointer in
    * device memory space \param device_address identifier of Event - tensor

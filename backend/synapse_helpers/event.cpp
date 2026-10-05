@@ -79,6 +79,11 @@ void event::complete() {
 }
 
 void event::stream_wait_event(stream& stream, const uint32_t flags) {
+  // The producer stream is immutable. Avoid the GIL round trip and mutex for
+  // an already ordered same-stream edge; cross-stream completion stays locked.
+  if (stream == stream_recorded_) {
+    return;
+  }
   habana_helpers::AutoNoGIL gil_release;
   std::unique_lock<std::mutex> lock(mutex_);
 

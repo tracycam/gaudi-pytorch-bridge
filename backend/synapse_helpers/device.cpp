@@ -1782,6 +1782,12 @@ void device::cleanup_workspace_buffer() {
 void device::add_wait_events_on_stream(
     const std::vector<device_ptr>& input_tensors,
     stream& stream) {
+  if (input_tensors.size() > 1) {
+    for (auto& event : sem_.get_wait_events(input_tensors)) {
+      event->stream_wait_event(stream);
+    }
+    return;
+  }
   for (const auto& input_addr : input_tensors) {
     PT_SYNHELPER_DEBUG(
         "Wait event address ", reinterpret_cast<void*>(input_addr))
@@ -1792,6 +1798,9 @@ void device::add_wait_events_on_stream(
 std::vector<shared_event> device::get_wait_events_on_stream(
     const std::vector<device_ptr>& input_tensors,
     stream& stream) {
+  if (input_tensors.size() > 1) {
+    return sem_.get_wait_events(input_tensors);
+  }
   std::vector<shared_event> event_list;
   for (const auto& input_addr : input_tensors) {
     PT_SYNHELPER_DEBUG(

@@ -17,6 +17,8 @@
 #include <synapse_common_types.h>
 
 #include <memory>
+#include <algorithm>
+#include <functional>
 #include <ostream>
 #include <utility>
 #include <vector>
@@ -276,6 +278,33 @@ shared_event stream_event_manager::get_wait_event(
     }
   }
   return event;
+}
+
+std::vector<shared_event> stream_event_manager::get_wait_events(
+    const std::vector<device_ptr>& device_addresses) {
+  // Preserve future/submission dependencies before examining producer events.
+  // Never wait for a future while holding the producer-map lock.
+  for (const auto address : device_addresses) {
+    wait_for_future(address);
+  }
+  std::vector<shared_event> events;
+  {
+    std::lock_guard<std::mutex> lock(mut_);
+    for (const auto address : device_addresses) {
+      const auto found = events_by_addr_.find(address);
+      if (found != events_by_addr_.end()) {
+        events.push_back(found->second);
+      }
+    }
+  }
+  // Retain event owners through submission. event::stream_wait_event handles
+  // completion races under its own lock, including partial tensor events.
+  // With no work between these waits their ordering is immaterial.
+  std::sort(events.begin(), events.end(), [](const auto& left, const auto& right) {
+    return std::less<event*>{}(left.get(), right.get());
+  });
+  events.erase(std::unique(events.begin(), events.end()), events.end());
+  return events;
 }
 
 void stream_event_manager::enqueue_wait_event(
