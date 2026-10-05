@@ -1,8 +1,9 @@
 # Bridge 区域依赖与通信 stream：首轮实现和实验
 
 本地日期 2026-10-04，远端日志为 UTC+8 的 10-05。
-这是 [区域执行计划](PLAN-REGIONAL-EXECUTION-20261004.zh-CN.md) 的 A/B 检查点，
-不是 C–F 全部完成，也不代表外置执行器可以退役。完整模型结果在本报告末尾更新。
+这是 [区域执行计划](PLAN-REGIONAL-EXECUTION-20261004.zh-CN.md) 的 A/B 检查点。
+完整70层已验证执行等价，**没有取得可确认整模收益，90 TPS 未达到**。
+不是 C–F 全部完成，也不代表外置执行器可以退役。
 
 ## 实现
 
@@ -85,15 +86,44 @@ SDK launch，因此还没有完成区域资源 frame 或统一底层提交。
 ## 完整70层验收
 
 同应用源码9ef501c，A=2aa4c1a02，D=77d849027，70层、TP8、4K、无MTP、B1/B2、
-每点两轮128 token。结果待本轮实际完成后填写；不能引用两层结果宣称90 TPS。
+每点两轮128 token，fresh-process A/D 对。计时不启用 profiler；诊断另跑请求。
+
+| 指标 | A | D | TPS相对变化 |
+|---|---:|---:|---:|
+| B1 round0 | 76.427 | 76.042 | −0.50% |
+| B1 round1 | 76.601 | 75.972 | −0.82% |
+| B2 round0，聚合 | 118.200 | 118.922 | +0.61% |
+| B2 round1，聚合 | 118.561 | 118.618 | +0.05% |
+
+768 token、六条完整输出序列完全相同。8 rank 的两份 bucket 计划均 ready，
+284命令/141通信，访问缺项0，**140次通信确实合流**；coalesced_replays 等于 replays。
+一个混合 compute/HCCL 命令仍保留原路径。全部 worker 实际 PCI、模块、线程
+CPU本地性验收通过，未加载外置执行器。覆盖通过不等于独立语言质量证明。
+
+整请求吞吐 B1 为21.95 TPS，B2聚合23.74–23.78 tokens/s，包含 prefill；不能用
+resident76替代完整请求吞吐。此配对不能证明稳定的亚百分比变化，没有90 TPS收益。
+
+轻量 host 诊断另跑55个稳态步、没有任何 profiler。rank0 的 model.forward
+8.571→8.305ms，而输出 cpu() 2.189→2.569ms；sample_tokens 12.817→12.832ms。
+rank4 更明显：forward 9.976→8.483ms，cpu() 0.808→2.423ms，完整采样窗口基本不变。
+这是**主机更早返回、等待移到了后面的同步点**的证据；嵌套中位数不能相加，
+cpu() 包含尚未完成的设备工作，不是2.6ms纯拷贝或CPU税。
+
+因此单独合流没有复现旧90。不能因为我们删掉了跨 stream wait，就给这些 wait
+赋予未经测量的毫秒收益。当前候选仍逐命令管理 producer、完成 event、资源与
+地址/workspace；下一阶段应减少真实 SDK 完成事件/重复管理并验证关键路径，
+不能只优化 enqueue 的返回时间。正常共享 Torch 安装未更换，候选仍在隔离环境。
 
 ## 尚欠与资产
 
 下一核心仍是 C/D：以执行区域管理地址/workspace/Storage及回收，减少内部逐命令
 事件管理和通用 launcher 重复工作。当前合流仍保留这些成本，不能当作完整移植。
+保活回收和对外 readiness 必须分开；输入最后使用、early output、跨流访问都要
+保留必要的发布点。预定 workspace 再提交，避免末尾才释放的资源和中途增长互等。
 再补公共重绑/异步 API，最后扩大正规捕获范围。bridge 不接入 token/KV页业务。
 
-退出依然可能有 HPUDevice 引用警告、worker SIGTERM 和 EngineCore 强制收尾。
+两臂 supervisor exit0、remaining_owned_processes=[]，后续核查8卡768MiB/0%。
+退出依然有 HPUDevice 引用警告、worker SIGTERM 和 EngineCore 强制收尾。
 设备释放与优雅退出分别验收，不能以进程 exit0 宣称生命周期债务已消失。
 
 用户“所有资产和成果留本地”的要求持续执行：
