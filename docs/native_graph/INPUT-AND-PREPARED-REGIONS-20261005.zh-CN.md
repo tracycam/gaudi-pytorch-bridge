@@ -150,5 +150,55 @@ SDK 提交，reset 和 drain 成功，无设备 reset。
 `lowered-collectives-n` 双卡安全门通过；`lowered2-n` B1/B2、页边界完整 logits
 通过。两层从 prepared 3/13 命令增至 8/13，可合并 collective 5/5，拒绝项为零。
 新测试选项 `--require-prepared-coverage` 要求 8 rank 真正执行 prepared 命令，
-且全部已准入 serial collective 均有 prepared adapter。70 层 `lowered70-n`
-正在验证，尚不宣称达到 90 TPS。
+且全部已准入 serial collective 均有 prepared adapter。
+
+
+## 完整覆盖后的实测与真正获得收益的输入准备
+
+`lowered70-n` 已通过全部质量门。每张卡主图 286 个命令中 281 个进入
+prepared region，141/141 个可合并 collective 均覆盖，拒绝项为零。
+B1 为 84.432 → 84.615 TPS，B2 为 129.051 → 128.876 tokens/s，基本持平。
+CPU graph.replay 从 6.818 降至 4.519ms，但输出等待从 3.501 增至 5.808ms；
+二者重叠于设备运行，不能把 CPU 提交节省直接计入模型收益。
+
+`layout70-r` 保持相同设备计算，复用 vLLM decode 的静态 CPU/HPU 输入布局，
+按实际 scheduler 的 token、位置和页表更新动态字段。请求、页表或布局改变则
+回到原 builder；没有预测下一个 token，没有绕过 PyTorch copy 或 allocator。
+完整 70 层、TP8、4K、160 输出、B1/B2 同进程 ABBA：
+
+| batch | control ms | candidate ms | 吞吐 |
+|---|---:|---:|---:|
+| 1 | 11.7785 | 11.4938 | 84.9002 → 87.0033 TPS |
+| 2 | 15.4555 | 15.2255 | 129.4034 → 131.3586 tokens/s |
+
+两次候选和两次对照的输出一致，六组完整 logits 检查通过，各 rank 输入布局
+缓存实际命中。CPU 输入准备约 0.660 → 0.345ms，这是位于提交前的真实收益。
+距离 90 TPS 的 11.1111ms 门槛仍差约 0.3827ms，不能宣称达标。
+
+## GIL／事件锁／提交队列的死锁与修复
+
+随后 `static2-s` 移除未使用的 KV 输入树、加快标量和元数据哈希，但在质量阶段
+挂起，因此其计时全部作为未验收数据保存，不纳入性能结论。真实调用栈显示：
+
+1. Python 主线程持有 GIL，在 graph.replay 中等待 HCCL 提交 future。
+2. HCCL 提交线程在 RecipeLauncher 中等待事件 mutex。
+3. 资源清理线程持有该事件 mutex，释放带 Python owner 的 Tensor 时等待 GIL。
+
+这是一条确定的锁依赖环，不是模型数值问题。旧的 caller-thread launch 有
+内部 AutoNoGIL；将执行排入独立提交队列后，调用方不能继续持有 GIL 等待。
+`7022d55e2` 在 graph Python/C++ API 边界、取得 graph/plan 锁之前释放 GIL，
+覆盖 replay、捕获、reset、输入标记等可能阻塞的接口。统计先在无 GIL 的作用域
+复制纯 C++ 数据，再取得 GIL 构造 Python 容器，避免逆向的 GIL/graph 锁次序。
+
+测试 interposer 暂停一次 SDK launch，必须由 Python 辅助线程释放，并在释放后
+并发读取状态和 reset。超时上限 2 秒，不依赖随机触发垃圾回收：
+
+- 旧 wheel `e0ea1872f` 的 `gil-old-u` 在该点超时失败，符合负对照预期。
+- 新 wheel `7022d55e2` 的 `gil-new-u` 双卡普通和 prepared 两条路径均通过；
+  Python 在提交返回前取得执行机会，并发 snapshot/reset 与输出均正确。
+- 同轮 FP32/BF16 通信链、跨流依赖、提交前缀失败和真实显存整理后的地址
+  缓存失效测试通过。6 项 hash 语义测试及 4 项 CPU 输入布局对照测试通过。
+
+修复后的整模型验证仍需收账；本节不把修复死锁当作 TPS 收益。
+原始结果、旧版本失败、调用栈、源码 bundle 和 wheel 均归档于本地
+`bridge-event-batch-20261005` 实验资产目录。
