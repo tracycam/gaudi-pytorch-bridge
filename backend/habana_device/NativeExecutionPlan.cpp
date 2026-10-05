@@ -81,7 +81,15 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
       if (command.access.compute && !command.access.collectives && command.external_events.empty()) {
         if (!call.owner->recipe_ || call.owner->recipe_->graph_is_empty_)
           return unsupported("missing or empty compute recipe");
-        const auto& source = command.live_bindings;
+        // patch_launch_info also keeps compiler-eliminated shape entries.
+        // They have no live recipe Tensor ID and are ignored by Synapse.
+        // Apply the same live-binding rule as dependency admission above;
+        // never let dead metadata reject an otherwise static serial region.
+        std::vector<synLaunchTensorInfo> source;
+        for (const auto& tensor : command.live_bindings) {
+          if (tensor.tensorId != synapse_helpers::INVALID_SYN_TENSOR_ID)
+            source.push_back(tensor);
+        }
         call.tensors.resize(source.size());
         call.names.reserve(source.size());
         for (const auto& tensor : source) {
