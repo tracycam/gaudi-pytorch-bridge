@@ -780,6 +780,20 @@ synStatus SYN_API_CALL synLaunchWithExternalEvents(
   }
 }
 
+synStatus SYN_API_CALL synLaunchWithExternalEventsExt(
+    synStreamHandle stream, const synLaunchTensorInfoExt* tensors,
+    uint32_t count, uint64_t workspace, synRecipeHandle recipe,
+    synEventHandle* events, uint32_t event_count, uint32_t flags) {
+  const bool emulate = UsePartialEventEmulation();
+  auto status = syn_api->synLaunchWithExternalEventsExt(stream, tensors, count,
+      workspace, recipe, emulate ? nullptr : events, emulate ? 0 : event_count, flags);
+  if (emulate && status == synSuccess) {
+    for (uint32_t i=0; i<event_count && status==synSuccess; ++i)
+      status = synEventRecord(events[i], stream);
+  }
+  return status;
+}
+
 synStatus SYN_API_CALL synTensorSetExternal(synTensor tensor, bool isExternal) {
   if (UsePartialEventEmulation()) {
     auto& partial_event_emulation = PartialEventEmulation::Instance();

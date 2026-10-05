@@ -531,6 +531,60 @@ void SubmitCollectivePlan(std::function<void()> submit) {
   future.get();
 }
 
+namespace {
+uint64_t replay_buffer(const PtTensorInfoShared& tensor) {
+  auto address = reinterpret_cast<uint64_t>(tensor->get_buffer());
+  if (GET_ENV_FLAG_NEW(PT_HPU_ENABLE_COLLECTIVE_VIEW_FUSE) &&
+      tensor->get_external_offset() != uint64_t(-1)) {
+    address = reinterpret_cast<uint64_t>(tensor->get_buffer_start()) + tensor->get_external_offset();
+  }
+  return address;
+}
+} // namespace
+
+std::shared_ptr<PreparedCollectiveCall> HcclAllreduceOperator::PrepareReplayCall(
+    const std::vector<PtTensorInfoShared>& inputs) const {
+  if (!inline_submission_ || !replay_communicator_ || inputs.empty() ||
+      !inputs[0]->get_numel() || (scalar_type_ != at::kFloat && scalar_type_ != at::kBFloat16)) return nullptr;
+  auto result = std::make_shared<PreparedCollectiveCall>();
+  result->input = result->output = replay_buffer(inputs[0]);
+  const size_t count = inputs[0]->get_numel();
+  const size_t bytes = c10::elementSize(habana_helpers::getInternalDtype(scalar_type_));
+  const size_t chunk = habana_helpers::getHCCLSliceSize() / bytes;
+  const auto dtype = getHCCLDataType(scalar_type_);
+  const auto op = getHCCLReduceOp((RedOpType)reduce_op_, scalar_type_);
+  if (!chunk) return nullptr;
+  result->submit = [comm=replay_communicator_, count, bytes, chunk, dtype, op](
+      uint64_t input, uint64_t output, synStreamHandle stream) {
+    for (size_t offset=0; offset<count;) {
+      auto n = std::min(chunk, count-offset);
+      auto status = hcclAllReduce(reinterpret_cast<void*>(input+offset*bytes),
+          reinterpret_cast<void*>(output+offset*bytes), n, dtype, op, *comm->GetHcclHandle(), stream);
+      HABANA_ASSERT(status == hcclSuccess, "Prepared all-reduce failed");
+      offset += n;
+    }
+  };
+  return result;
+}
+
+std::shared_ptr<PreparedCollectiveCall> HcclAllgatherOutOperator::PrepareReplayCall(
+    const std::vector<PtTensorInfoShared>& inputs) const {
+  if (!inline_submission_ || !replay_communicator_ || inputs.size() < 3 ||
+      !inputs[0]->get_numel() || (scalar_type_ != at::kFloat && scalar_type_ != at::kBFloat16)) return nullptr;
+  auto result = std::make_shared<PreparedCollectiveCall>();
+  result->input = replay_buffer(inputs[0]);
+  result->output = replay_buffer(inputs[2]);
+  auto count = static_cast<size_t>(GetNumel(inputs[0]));
+  auto dtype = getHCCLDataType(scalar_type_);
+  getCountDatatype(scalar_type_, count, dtype);
+  result->submit = [comm=replay_communicator_, count, dtype](uint64_t input, uint64_t output, synStreamHandle stream) {
+    auto status = hcclAllGather(reinterpret_cast<void*>(input), reinterpret_cast<void*>(output),
+        count, dtype, *comm->GetHcclHandle(), stream);
+    HABANA_ASSERT(status == hcclSuccess, "Prepared all-gather failed");
+  };
+  return result;
+}
+
 std::shared_ptr<CollectiveOperator>
 HcclAllreduceOperator::SnapshotForReplay() const {
   if (scalar_type_ != at::kFloat && scalar_type_ != at::kBFloat16) {

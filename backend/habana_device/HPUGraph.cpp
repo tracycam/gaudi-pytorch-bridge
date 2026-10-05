@@ -587,6 +587,12 @@ void HPUGraph::set_native_event_batching(bool enabled) {
   native_plan_->set_event_batching(enabled);
 }
 
+void HPUGraph::set_native_compiled_regions(bool enabled) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  TORCH_CHECK(native_plan_, "Graph has no native plan");
+  native_plan_->set_compiled_regions(enabled);
+}
+
 std::vector<NativeAccessDiagnostic> HPUGraph::native_dependency_diagnostics() const {
   return native_plan_ ? native_plan_->dependency_diagnostics()
                       : std::vector<NativeAccessDiagnostic>{};

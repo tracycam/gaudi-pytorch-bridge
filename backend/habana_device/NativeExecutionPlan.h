@@ -26,6 +26,9 @@ struct NativeReplayStats {
   size_t event_batches = 0;
   size_t batched_publications = 0;
   size_t interrupted_event_batches = 0;
+  bool compiled_regions = false;
+  size_t prepared_regions = 0;
+  size_t prepared_region_replays = 0;
   bool ready = false;
   bool failed = false;
   std::string reason;
@@ -67,6 +70,7 @@ class NativeExecutionPlan {
   // poison the plan, so a partially submitted chain can never run twice.
   bool replay();
   void set_event_batching(bool enabled);
+  void set_compiled_regions(bool enabled);
   NativeReplayStats stats() const;
   std::vector<NativeAccessDiagnostic> dependency_diagnostics() const;
 

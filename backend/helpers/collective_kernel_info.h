@@ -73,6 +73,7 @@ class CollectiveKernelInfos {
       std::vector<PtTensorInfoShared>& writes) const;
   std::shared_ptr<habana::HcclCommunicator> SingleReplayCommunicator() const;
   void SetReplayStream(synapse_helpers::stream* stream) const;
+  std::shared_ptr<habana::PreparedCollectiveCall> PrepareReplayCall() const;
 
 
   void AddKernel(Info&& info) {

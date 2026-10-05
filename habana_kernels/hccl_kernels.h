@@ -24,6 +24,11 @@ class stream;
 namespace habana {
 
 class HcclCommunicator;
+struct PreparedCollectiveCall {
+  uint64_t input = 0;
+  uint64_t output = 0;
+  std::function<void(uint64_t, uint64_t, synStreamHandle)> submit;
+};
 // One host submission job, using the bridge's existing ordered HCCL queue.
 // Returns after SDK enqueue, not device completion; propagates enqueue errors.
 void SubmitCollectivePlan(std::function<void()> submit);
@@ -66,6 +71,8 @@ class CollectiveOperator : public habana::HabanaOperator {
   virtual std::shared_ptr<CollectiveOperator> SnapshotForReplay() const {
     return nullptr;
   }
+  virtual std::shared_ptr<PreparedCollectiveCall> PrepareReplayCall(
+      const std::vector<PtTensorInfoShared>&) const { return nullptr; }
 
   // Describe actual data accesses, separately from event registrations that
   // also protect a Tensor against being overwritten while it is read.
@@ -145,6 +152,8 @@ class HcclAllreduceOperator : public CollectiveOperator {
       synapse_helpers::event_done_callback cleanup_callback) const override;
 
   std::shared_ptr<CollectiveOperator> SnapshotForReplay() const override;
+  std::shared_ptr<PreparedCollectiveCall> PrepareReplayCall(
+      const std::vector<PtTensorInfoShared>&) const override;
   bool ReplayAccesses(
       const std::vector<PtTensorInfoShared>& inputs,
       std::vector<PtTensorInfoShared>& reads,
@@ -232,6 +241,8 @@ class HcclAllgatherOutOperator : public CollectiveOperator {
       synapse_helpers::event_done_callback cleanup_callback) const override;
 
   std::shared_ptr<CollectiveOperator> SnapshotForReplay() const override;
+  std::shared_ptr<PreparedCollectiveCall> PrepareReplayCall(
+      const std::vector<PtTensorInfoShared>&) const override;
   bool ReplayAccesses(
       const std::vector<PtTensorInfoShared>& inputs,
       std::vector<PtTensorInfoShared>& reads,

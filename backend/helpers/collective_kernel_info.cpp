@@ -134,6 +134,11 @@ void CollectiveKernelInfos::SetReplayStream(synapse_helpers::stream* stream) con
   }
 }
 
+std::shared_ptr<habana::PreparedCollectiveCall> CollectiveKernelInfos::PrepareReplayCall() const {
+  return infos_.size() == 1 && infos_[0].kernel
+      ? infos_[0].kernel->PrepareReplayCall(infos_[0].input_tensor_infos) : nullptr;
+}
+
 void CollectiveKernelInfos::ClearAllPtAndSynTensors() {
   for (const auto& kernel_info : infos_) {
     HABANA_ASSERT(kernel_info.kernel);

@@ -102,6 +102,7 @@
   visitor(synTensorExtExtractExecutionOrder); \
   visitor(synEventMapTensor);                 \
   visitor(synLaunchWithExternalEvents);       \
+  visitor(synLaunchWithExternalEventsExt);    \
   visitor(synTensorSetExternal);              \
   visitor(synTensorGetExternal);              \
   visitor(synTensorSetMinimalLatency);        \

@@ -346,6 +346,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     result["event_batches"] = stats.event_batches;
     result["batched_publications"] = stats.batched_publications;
     result["interrupted_event_batches"] = stats.interrupted_event_batches;
+    result["compiled_regions"] = stats.compiled_regions;
+    result["prepared_regions"] = stats.prepared_regions;
+    result["prepared_region_replays"] = stats.prepared_region_replays;
     result["replays"] = stats.replays;
     result["ready"] = stats.ready;
     result["failed"] = stats.failed;
@@ -354,6 +357,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   });
   m.def("native_replay_event_batching", [](at::hpu::HPUGraph& graph, bool enabled) {
     graph.set_native_event_batching(enabled);
+  });
+  m.def("native_replay_compiled_regions", [](at::hpu::HPUGraph& graph, bool enabled) {
+    graph.set_native_compiled_regions(enabled);
   });
   m.def("native_dependency_diagnostics", [](at::hpu::HPUGraph& graph) {
     py::list result;

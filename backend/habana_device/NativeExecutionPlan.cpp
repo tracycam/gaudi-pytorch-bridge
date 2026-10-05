@@ -14,6 +14,7 @@
 #include "backend/helpers/tensor_info.h"
 #include "backend/synapse_helpers/hccl_communicator.h"
 #include "backend/synapse_helpers/replay_event_batch.h"
+#include "backend/synapse_helpers/devmem_logger.h"
 #include "pytorch_helpers/habana_helpers/logging.h"
 
 namespace at::hpu {
@@ -42,6 +43,123 @@ struct RecipeCommand {
   std::vector<size_t> external_events;
   NativeCommandAccess access;
   std::vector<std::string> access_issues;
+};
+
+// Lower an already-proven serial region, not a second graph executor. Address
+// translation and completion still belong to the bridge allocator/event map.
+struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgram> {
+  struct Call {
+    std::shared_ptr<habana::RecipeLauncher> owner;
+    std::shared_ptr<habana::PreparedCollectiveCall> collective;
+    std::vector<synLaunchTensorInfoExt> tensors;
+    std::vector<std::string> names;
+    std::vector<size_t> slots;
+  };
+  std::vector<Call> calls;
+  std::vector<at::Tensor> retained;
+  std::vector<synapse_helpers::device_ptr> addresses, dependencies;
+  size_t workspace_size = 0;
+
+  static std::shared_ptr<PreparedRegionProgram> compile(
+      const std::vector<RecipeCommand>& commands, size_t first, size_t last,
+      const std::vector<RetainedTensorBinding>& leases) {
+    auto result = std::make_shared<PreparedRegionProgram>();
+    result->calls.reserve(last-first+1);
+    std::vector<std::vector<uint64_t>> bindings;
+    for (size_t i=first; i<=last; ++i) {
+      const auto& command = commands[i];
+      Call call;
+      call.owner = command.launcher;
+      std::vector<uint64_t> pointers;
+      if (command.access.compute && !command.access.collectives && command.external_events.empty()) {
+        if (!call.owner->recipe_ || call.owner->recipe_->graph_is_empty_) return nullptr;
+        const auto& source = command.live_bindings;
+        call.tensors.resize(source.size());
+        call.names.reserve(source.size());
+        for (const auto& tensor : source) {
+          if (tensor.tensorType != DATA_TENSOR) return nullptr;
+          call.names.emplace_back(tensor.tensorName ? tensor.tensorName : "");
+          pointers.push_back(tensor.pTensorAddress);
+        }
+        for (size_t n=0; n<source.size(); ++n) {
+          auto& target = call.tensors[n];
+          target.tensorName = call.names[n].c_str();
+          target.tensorId = source[n].tensorId;
+          target.tensorType = source[n].tensorType;
+          std::copy(std::begin(source[n].tensorSize), std::end(source[n].tensorSize), target.tensorSize);
+        }
+        result->workspace_size = std::max(result->workspace_size, size_t(call.owner->workspace_size_));
+      } else if (!command.access.compute && command.access.collectives == 1) {
+        call.collective = call.owner->collective_kernels_info_->PrepareReplayCall();
+        if (!call.collective) return nullptr;
+        pointers = {call.collective->input, call.collective->output};
+      } else return nullptr;
+      result->addresses.insert(result->addresses.end(), pointers.begin(), pointers.end());
+      result->dependencies.insert(result->dependencies.end(), command.access.reads.begin(), command.access.reads.end());
+      result->dependencies.insert(result->dependencies.end(), command.access.writes.begin(), command.access.writes.end());
+      bindings.push_back(std::move(pointers));
+      result->calls.push_back(std::move(call));
+    }
+    auto unique = [](auto& values) {
+      std::sort(values.begin(), values.end());
+      values.erase(std::unique(values.begin(), values.end()), values.end());
+    };
+    unique(result->addresses);
+    unique(result->dependencies);
+    for (size_t i=0; i<bindings.size(); ++i)
+      for (auto address : bindings[i])
+        result->calls[i].slots.push_back(std::lower_bound(result->addresses.begin(), result->addresses.end(), address)-result->addresses.begin());
+    for (const auto& lease : leases) result->retained.push_back(lease.tensor);
+    return result;
+  }
+
+  void replay(synapse_helpers::device& device, synapse_helpers::stream& stream) {
+    PT_BRIDGE_LAMBDA_BEGIN("PreparedRegionSubmit");
+    struct Frame {
+      std::shared_ptr<PreparedRegionProgram> program;
+      std::unique_ptr<synapse_helpers::device_ptr_lock> lock;
+      synapse_helpers::active_recipe_counter* counter = nullptr;
+      ~Frame() {
+        lock.reset();
+        program.reset();
+        if (counter) counter->decrease_and_notify();
+      }
+    };
+    device.add_wait_events_on_stream(dependencies, stream);
+    auto workspace = device.get_workspace_buffer(workspace_size);
+    auto frame = std::make_shared<Frame>();
+    frame->program = shared_from_this();
+    frame->lock = std::make_unique<synapse_helpers::device_ptr_lock>(device.lock_addresses(addresses));
+    device.get_active_recipe_counter().increase();
+    frame->counter = &device.get_active_recipe_counter();
+    auto publish = [&] {
+      try {
+        device.register_producer_on_stream(std::vector<synapse_helpers::device_ptr>(dependencies), stream,
+            [frame]() mutable { frame.reset(); });
+      } catch (...) {
+        // A possibly submitted prefix must finish before its owners disappear.
+        try { stream.synchronize(); } catch (...) { std::terminate(); }
+        throw;
+      }
+    };
+    try {
+      for (auto& call : calls) {
+        if (call.collective) {
+          call.collective->submit(frame->lock->at(call.slots[0]), frame->lock->at(call.slots[1]), stream);
+        } else {
+          for (size_t n=0; n<call.tensors.size(); ++n)
+            call.tensors[n].pTensorAddress = frame->lock->at(call.slots[n]);
+          auto status = synLaunchWithExternalEventsExt(stream, call.tensors.data(), call.tensors.size(),
+              call.owner->workspace_size_ ? workspace : 0, call.owner->recipe_->syn_recipe_handle_, nullptr, 0, 0);
+          HABANA_ASSERT(status == synSuccess, "Prepared recipe launch failed: ", status);
+        }
+      }
+    } catch (...) {
+      publish();
+      throw;
+    }
+    publish();
+  }
 };
 
 bool static_recipe(
@@ -95,6 +213,7 @@ struct NativeExecutionPlan::Impl {
     std::shared_ptr<habana::HcclCommunicator> communicator;
     std::shared_ptr<synapse_helpers::ReplayEventBatch::Footprint> footprint;
     size_t workspace_size;
+    std::shared_ptr<PreparedRegionProgram> program;
   };
   std::vector<StreamRegion> regions;
 
@@ -390,7 +509,9 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
         impl_->regions.push_back({region.collectives.front(), region.collectives.back(),
                                   communicators[region.collectives.front()],
                                   std::make_shared<synapse_helpers::ReplayEventBatch::Footprint>(std::move(addresses)),
-                                  workspace});
+                                  workspace, PreparedRegionProgram::compile(impl_->commands,
+                                      region.collectives.front(), region.collectives.back(), impl_->leases)});
+        impl_->stats.prepared_regions += bool(impl_->regions.back().program);
         impl_->stats.coalesced_collectives += region.collectives.size();
       }
     }
@@ -453,6 +574,11 @@ bool NativeExecutionPlan::replay() {
       size_t region_index = 0;
       auto& device = habana::HPUDeviceContext::get_device();
       auto& compute = device.get_stream(impl_->commands.front().stream);
+      const char* sync_launch = std::getenv("PT_HPU_SYNC_LAUNCH");
+      const bool prepared_allowed = impl_->stats.compiled_regions &&
+          !GET_ENV_FLAG_NEW(PT_COMPILE_ONLY_MODE) &&
+          !synapse_helpers::memory_reporter_enable() &&
+          (!sync_launch || std::atoi(sync_launch) == 0);
       synapse_helpers::stream* communication = nullptr;
       std::unique_ptr<synapse_helpers::ReplayEventBatch> event_batch;
       bool entered = false;
@@ -483,6 +609,14 @@ bool NativeExecutionPlan::replay() {
             device.record_and_wait_for_event(*communication, compute,
                                              [communicator]() {});
             entered = true;
+            if (prepared_allowed && impl_->regions[region_index].program) {
+              impl_->regions[region_index].program->replay(device, compute);
+              ++impl_->stats.prepared_region_replays;
+              index = impl_->regions[region_index].last;
+              leave();
+              ++region_index;
+              continue;
+            }
             if (impl_->stats.event_batching) {
               // Reserve the region's largest workspace before extending any
               // per-command lifetime to the region boundary.
@@ -541,6 +675,14 @@ void NativeExecutionPlan::set_event_batching(bool enabled) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   TORCH_CHECK(impl_->stats.ready && !impl_->stats.failed, "Native plan is not ready");
   impl_->stats.event_batching = enabled;
+  if (enabled) impl_->stats.compiled_regions = false;
+}
+
+void NativeExecutionPlan::set_compiled_regions(bool enabled) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  TORCH_CHECK(impl_->stats.ready && !impl_->stats.failed, "Native plan is not ready");
+  impl_->stats.compiled_regions = enabled;
+  if (enabled) impl_->stats.event_batching = false;
 }
 
 std::vector<NativeAccessDiagnostic>
