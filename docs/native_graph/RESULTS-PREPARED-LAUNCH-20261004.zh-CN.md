@@ -1,8 +1,17 @@
 # Prepared launch 与真实提交路径：续行检查点
 
-2026-10-04，用户已要求继续，构建和实验恢复。远端日志使用 UTC，部分为 10-05。
+2026-10-04，用户已要求继续，构建和实验恢复。远端系统时区为 UTC+8，部分日志为 10-05。
 目标仍是可复用的 bridge 执行能力；权重、计算 kernel 和精度未改，应用继续使用
 普通 `HPUGraph`。两个外置执行器保留为对照，尚未完成弃用条件。
+
+**后续探针身份纠正：** 旧单卡 supervisor 只设置 `HABANA_VISIBLE_MODULES`，没有设置
+bridge 实际用于选卡的 `HLS_MODULE_ID`。硬件 trace 证明一次请求 module5 的旧
+探针实际运行在 module0/PCI43，且 CPU 绑定在 NUMA1。因此本文历史单卡数字不能
+作为“module5、NUMA 本地”的证据；功能结果与原始计时保留，但旧微基准的本地性
+与归因需重新验证。TP2 和完整模型 worker 已在 import 前设置 `HLS_MODULE_ID`，
+不受这项探针 bug 影响。新 supervisor 同时设置两者，并检查实际 accel 文件描述符、
+PCI 和 CPU 本地性。后续结果见
+[依赖批处理检查点](RESULTS-DEPENDENCY-BATCH-20261004.zh-CN.md)。
 
 ## 本轮实现
 
