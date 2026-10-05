@@ -17,6 +17,7 @@ def main():
     import habana_frameworks.torch as ht
     from habana_frameworks.torch import _hpu_C
     from habana_frameworks.torch.activity_profiler.activity_profiler import DebugActivity
+    from importlib.metadata import version
     output = Path(os.environ.get('PROBE_OUT', '.'))
     initially_initialized = torch.hpu.is_initialized()
     with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU],
@@ -28,6 +29,7 @@ def main():
     cpu_events = json.loads((output/'cpu-only.json').read_text())['traceEvents']
     assert any(e.get('name') == 'aten::add' for e in cpu_events)
     record = dict(status='PASS', cpu_event_count=len(cpu_events), hardware_source=False,
+                  bridge_version=version('habana-torch-plugin'),
                   hpu_initialized_before_cpu_trace=initially_initialized,
                   hpu_initialized_after_cpu_trace=torch.hpu.is_initialized(),
                   profile_api_marker=os.getenv('HABANA_PROFILE'))
