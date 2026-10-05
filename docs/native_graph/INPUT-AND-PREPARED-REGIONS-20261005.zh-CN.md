@@ -243,4 +243,42 @@ B1 88.5216、B2 134.1970，与前轮基本持平；尚未证明这两处带来�
 进一步把 Lazy 边界按 Data 身份去重，并批量验证 Tensor 绑定。Lazy 层拥有该表，
 backend plan 仍仅处理 Tensor lease；所有 retained Tensor 的完整元数据校验保留。
 同时补齐 GIL 释放后 stats/诊断/clear_inputs 与 reset 的 graph 互斥。
-该改动尚在构建验证，不能宣称已达到 90 TPS。
+该改动的完整验证和最终普通配置结果见下节。
+
+## 最终交付：普通配置 91.02 TPS
+
+测试的 bridge 代码为 `47f28b972f9`，serving/验证代码为 `a450e13`。
+70 层 MiMo-V2.6-Pro-RL、TP8、4K 输入、greedy、无 MTP；每请求生成 256 个
+token，B1/B2 各四次。结果按驻留连续输出区间的总步数除以总墙钟汇总，
+包含 step 间空隙；从第 16 个输出开始统计，不含加载、prefill 和预热。
+
+| 验证 | B1 TPS | B2 合计 tokens/s |
+|---|---:|---:|
+| `bound70-ad`，同进程 ABBA 候选 | 90.80 | 137.54 |
+| `default70-af`，初版普通配置 | 89.80 | 136.07 |
+| `structured70-ag`，最终普通配置 | **91.02** | **137.77** |
+
+没有将 89.80 四舍五入为达标。最后将 dataclass 字段遍历放进 bridge，减少
+逐字段 Python/C++ 往返，同时保留 Python 字段读取顺序、哈希和拷贝语义。
+普通配置的四次 B1 为 90.80、90.28、91.95、91.05 TPS，合计 91.015888 TPS，
+平均每步 10.987093ms。B2 合计 137.768940 tokens/s。此结果没有在性能请求
+之间调用策略切换 RPC，预热覆盖相同的页和形状范围。
+
+最终六组 input_ids、positions、完整 logits 检查通过；检索生成全部包含
+正确验证码 7391，重复运行 token 一致。所有 rank 均未加载旧外部执行器。
+主图 281/286 命令和 141/141 可合并 collective 进入 prepared 路径，无拒绝。
+Lazy 边界从 3597 个引用去重为 2391 项，2392 个 retained Tensor 绑定仍完整
+校验。21 项 C++ 测试、8 项输入遍历语义测试、5 项输入布局对照通过。
+
+执行入口仍是 PyTorch HPUGraph，准备和提交优化位于 bridge 内。现有 worker
+适配器配置为 `selection.engine.runtime = {"executor": "pytorch", "runner":
+"native", "decode_graph": "step", "native_enabled": false}`。它不代表任意
+未适配程序只替换 wheel 就有相同收益，也不代表 prefill、MTP 已完成本轮验收。
+模型算子、精度和归约算术未变。
+
+本地 `gaudi-kernels/artifacts/builds/bridge-event-batch-20261005/` 保存源码 bundle、
+全部 wheel、失败记录、原始结果、复现 manifest、脚本、无损 trace 和 SHA 清单；
+`DELIVERY-90TPS.md` 为交付入口。最终 wheel SHA256 为
+`b125db8a2351fb182fbe10baaab9ef2bf700f3256d1167b7a455bf31816d614b`。
+全部 8 张卡已释放。文档提交可能晚于上述测试代码版本，wheel 对应的代码
+版本以 `47f28b972f9` 为准。
