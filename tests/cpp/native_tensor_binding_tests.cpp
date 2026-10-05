@@ -130,3 +130,62 @@ TEST(PreparedTensorBindingsTest, ExternalAliasKeepsEntryWaitButUsesExternalProdu
   EXPECT_EQ(launcher.prepared_bindings_->reads.size(), 1);
   EXPECT_TRUE(launcher.prepared_bindings_->producers.empty());
 }
+
+TEST(PreparedLaunchBindingsTest, RestoresAbstractAddressesWithoutCopyingStaticMetadata) {
+  synLaunchTensorInfo data{};
+  data.pTensorAddress = 0x1000;
+  data.tensorId = 17;
+  data.tensorType = DATA_TENSOR;
+  data.tensorSize[0] = 8;
+  data.tensorName = "data";
+  auto alias = data;
+  alias.tensorId = 19;
+  std::vector<synLaunchTensorInfo> live{data, alias};
+  const synapse_helpers::PreparedLaunchBindings prepared(live);
+  prepared.initialize(live);
+  // Mimic repeated allocator resolution, including two aliases of one handle.
+  for (uint64_t physical : {0x9000, 0xa000}) {
+    live[0].pTensorAddress = physical;
+    live[1].pTensorAddress = physical;
+    prepared.restore_addresses(live);
+    EXPECT_EQ(live[0].pTensorAddress, 0x1000);
+    EXPECT_EQ(live[1].pTensorAddress, 0x1000);
+    EXPECT_EQ(live[0].tensorId, 17);
+    EXPECT_EQ(live[1].tensorId, 19);
+    EXPECT_EQ(live[0].tensorSize[0], 8);
+    EXPECT_STREQ(live[0].tensorName, "data");
+  }
+}
+
+TEST(PreparedLaunchBindingsTest, HostPointersAndZeroSizedTensorAreNotDeviceHandles) {
+  synLaunchTensorInfo scalar{};
+  scalar.pTensorAddress = 0x1000;
+  scalar.tensorType = DATA_TENSOR;
+  auto host = scalar;
+  host.pTensorAddress = 0x2000;
+  host.tensorType = HOST_TO_DEVICE_TENSOR;
+  auto empty = scalar;
+  empty.pTensorAddress = 0;
+  std::vector<synLaunchTensorInfo> live{scalar, host, empty};
+  const synapse_helpers::PreparedLaunchBindings prepared(live);
+  EXPECT_EQ(prepared.allocator_addresses,
+            (std::vector<uint64_t>{0x1000, 0, 0}));
+  prepared.initialize(live);
+  EXPECT_EQ(live[0].tensorSize[0], 1);
+  EXPECT_EQ(live[1].tensorSize[0], 1);
+  EXPECT_EQ(live[2].tensorSize[0], 0);
+  live[0].pTensorAddress = 0x9000;
+  live[1].pTensorAddress = 0;
+  prepared.restore_addresses(live);
+  EXPECT_EQ(live[1].pTensorAddress, 0x2000);
+}
+
+TEST(PreparedLaunchBindingsTest, InvalidCountRejectsBeforeChangingAnyAddress) {
+  synLaunchTensorInfo data{};
+  data.pTensorAddress = 0x1000;
+  const synapse_helpers::PreparedLaunchBindings prepared({data});
+  std::vector<synLaunchTensorInfo> invalid{data, data};
+  invalid.front().pTensorAddress = 0x9000;
+  EXPECT_THROW(prepared.restore_addresses(invalid), std::invalid_argument);
+  EXPECT_EQ(invalid.front().pTensorAddress, 0x9000);
+}

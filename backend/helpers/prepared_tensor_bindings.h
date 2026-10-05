@@ -2,8 +2,10 @@
 #pragma once
 
 #include <ATen/Tensor.h>
+#include <memory>
 #include <vector>
 #include "backend/synapse_helpers/device_types.h"
+#include "backend/synapse_helpers/prepared_launch_bindings.h"
 
 namespace habana {
 
@@ -17,6 +19,7 @@ struct PreparedTensorBindings {
   std::vector<c10::Storage> storage_owners;
   std::vector<synapse_helpers::device_ptr> reads;
   std::vector<synapse_helpers::device_ptr> producers;
+  std::shared_ptr<const synapse_helpers::PreparedLaunchBindings> launch;
 };
 
 } // namespace habana

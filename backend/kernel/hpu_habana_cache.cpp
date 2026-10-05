@@ -1617,6 +1617,8 @@ void RecipeLauncher::PrepareTensorBindings(
     const std::vector<synLaunchTensorInfo>& bindings,
     const std::vector<size_t>& external_events) {
   auto prepared = std::make_shared<PreparedTensorBindings>();
+  prepared->launch =
+      std::make_shared<synapse_helpers::PreparedLaunchBindings>(bindings);
   auto keep = [&](const at::Tensor& tensor, bool output, bool dependency) {
     prepared->storage_owners.push_back(tensor.storage());
     (output ? prepared->outputs : prepared->inputs).push_back(tensor);
@@ -1800,7 +1802,8 @@ void RecipeLauncher::Launch(
             address_lock,
             ext_events,
             stream_handle,
-            active_graph_key_);
+            active_graph_key_,
+            prepared_bindings_ ? prepared_bindings_->launch.get() : nullptr);
         habana_lazy::log_dev_mem_stats(
             "Post-Launch", graph_name_, workspace_size_);
       } else {

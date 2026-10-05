@@ -32,6 +32,7 @@
 #include "backend/synapse_helpers/device.h"
 #include "backend/synapse_helpers/devmem_logger.h"
 #include "backend/synapse_helpers/graph.h"
+#include "backend/synapse_helpers/prepared_launch_bindings.h"
 #include "backend/synapse_helpers/stream.h"
 #include "backend/synapse_helpers/tensor_builder_base.h"
 #include "habana_helpers/logging.h"
@@ -767,6 +768,21 @@ void graph::launch(
     std::vector<shared_event>& ext_events,
     stream& compute_stream,
     size_t active_graph_key) {
+  launch(
+      device, recipe_handle, workspace_size, inputs_and_outputs_info,
+      address_lock, ext_events, compute_stream, active_graph_key, nullptr);
+}
+
+void graph::launch(
+    device& device,
+    const graph::recipe_handle& recipe_handle,
+    uint64_t workspace_size,
+    std::vector<synLaunchTensorInfo>& inputs_and_outputs_info,
+    std::unique_ptr<device_ptr_lock>& address_lock,
+    std::vector<shared_event>& ext_events,
+    stream& compute_stream,
+    size_t active_graph_key,
+    const PreparedLaunchBindings* prepared) {
   PT_SYNHELPER_BEGIN;
 
   if (recipe_handle.graph_is_empty_) {
@@ -778,13 +794,12 @@ void graph::launch(
       recipe_handle.in_execution_phase_, "Graph not in execution phase.");
 
   // Optimize tensor size patching - single pass
-  for (synLaunchTensorInfo& tensorInfo : inputs_and_outputs_info) {
-    // [SW-96080], due to change in get_tensor_for_scalar PT tensor has
-    // size [0] for 0d tensor need to force it [1] to pass to synapse
-    // correctly valdity check for pTensorAddress to differentiate from ZST in
-    // case of ZST pTensorAddress will be nullptr
-    if ((tensorInfo.pTensorAddress != 0U) && tensorInfo.tensorSize[0] == 0) {
-      tensorInfo.tensorSize[0] = 1;
+  if (!prepared) {
+    for (synLaunchTensorInfo& tensorInfo : inputs_and_outputs_info) {
+      // [SW-96080], 0D scalars need size [1]; null-address ZST stays [0].
+      if ((tensorInfo.pTensorAddress != 0U) && tensorInfo.tensorSize[0] == 0) {
+        tensorInfo.tensorSize[0] = 1;
+      }
     }
   }
 
@@ -817,20 +832,24 @@ void graph::launch(
 
   // Pre-allocate vectors with exact sizes to avoid reallocations
   const size_t info_size = inputs_and_outputs_info.size();
-  std::vector<device_ptr> addresses;
-  addresses.reserve(info_size);
-  std::unordered_map<uint64_t, uint64_t> host_address_map;
+  std::vector<device_ptr> ordinary_addresses;
 
-  // Single pass to populate addresses and host_address_map
-  for (size_t i = 0; i < info_size; ++i) {
-    const auto& info = inputs_and_outputs_info[i];
-    if (info.tensorType != HOST_TO_DEVICE_TENSOR) {
-      addresses.push_back(info.pTensorAddress);
-    } else {
-      host_address_map[i] = info.pTensorAddress;
-      addresses.push_back(static_cast<uint64_t>(0));
+  if (prepared) {
+    HABANA_ASSERT(prepared->allocator_addresses.size() == info_size,
+                  "Prepared launch binding count changed");
+  } else {
+    ordinary_addresses.reserve(info_size);
+    for (size_t i = 0; i < info_size; ++i) {
+      const auto& info = inputs_and_outputs_info[i];
+      if (info.tensorType != HOST_TO_DEVICE_TENSOR) {
+        ordinary_addresses.push_back(info.pTensorAddress);
+      } else {
+        ordinary_addresses.push_back(static_cast<uint64_t>(0));
+      }
     }
   }
+  const auto& addresses =
+      prepared ? prepared->allocator_addresses : ordinary_addresses;
 
   size_t least_workspace_size = workspace_size;
   const size_t tensor_mem =
@@ -885,9 +904,9 @@ void graph::launch(
             address);
       }
 
-      if (host_address_map.count(index) != 0U) {
-        iter->pTensorAddress = host_address_map[index];
-      } else {
+      // Host tensor addresses already belong to the caller. The corresponding
+      // allocator slot is zero and must not overwrite the host pointer.
+      if (iter->tensorType != HOST_TO_DEVICE_TENSOR) {
         iter->pTensorAddress = address;
       }
       ++index;
@@ -897,14 +916,16 @@ void graph::launch(
         recipe_handle, workspace_size, addresses, inputs_and_outputs_info);
 
     // emit the physical address
-    std::vector<device_ptr> locked_addresses(
-        address_lock->begin(), address_lock->end());
-    towl::emitRecipeLaunch(
-        recipe_handle,
-        workspace_size,
-        locked_addresses,
-        inputs_and_outputs_info,
-        true /* is_physical */);
+    if (towl::impl::TowlEnabled::flag) {
+      std::vector<device_ptr> locked_addresses(
+          address_lock->begin(), address_lock->end());
+      towl::emitRecipeLaunch(
+          recipe_handle,
+          workspace_size,
+          locked_addresses,
+          inputs_and_outputs_info,
+          true /* is_physical */);
+    }
 
     PT_SYNHELPER_DEBUG(
         "in graph::launch, launch handle string:\n",

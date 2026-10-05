@@ -32,7 +32,6 @@ struct RecipeCommand {
   VecOfIValPtrSh outputs;
   VecOfIValPtrSh dma_inputs;
   std::vector<std::string> names;
-  std::vector<synLaunchTensorInfo> bindings;
   std::vector<synLaunchTensorInfo> live_bindings;
   std::vector<size_t> external_events;
 };
@@ -213,14 +212,15 @@ void NativeExecutionPlan::append(
   command.launcher->PrepareTensorBindings(
       command.inputs, command.intermediates, command.outputs, bindings,
       external_events);
-  command.bindings = bindings;
+  command.live_bindings = bindings;
   command.names.reserve(bindings.size());
   for (const auto& binding : bindings) {
     command.names.emplace_back(binding.tensorName ? binding.tensorName : "");
   }
   for (size_t i = 0; i < bindings.size(); ++i) {
-    command.bindings[i].tensorName = command.names[i].c_str();
+    command.live_bindings[i].tensorName = command.names[i].c_str();
   }
+  command.launcher->prepared_bindings_->launch->initialize(command.live_bindings);
   impl_->commands.push_back(std::move(command));
   impl_->stats.commands = impl_->commands.size();
 }
@@ -277,7 +277,8 @@ bool NativeExecutionPlan::replay() {
       for (auto& command : impl_->commands) {
         // graph::launch mutates addresses to physical locked addresses. Reset the
         // abstract bindings each time; never reuse a physical pointer from capture.
-        command.live_bindings = command.bindings;
+        command.launcher->prepared_bindings_->launch->restore_addresses(
+            command.live_bindings);
         command.launcher->Launch(
             command.stream, command.inputs, command.intermediates,
             command.outputs, command.live_bindings, command.external_events,
