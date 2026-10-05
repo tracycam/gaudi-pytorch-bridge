@@ -39,6 +39,7 @@ add_habana_library(
   RealTimeMemoryLogger.cpp
   recipe.cpp
   recipe_handle_cache.cpp
+  replay_event_batch.cpp
   status_conversion.cpp
   stream_event_manager.cpp
   session.cpp

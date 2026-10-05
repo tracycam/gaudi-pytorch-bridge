@@ -22,6 +22,10 @@ struct NativeReplayStats {
   size_t incomplete_access_commands = 0;
   size_t coalesced_collectives = 0;
   size_t coalesced_replays = 0;
+  bool event_batching = false;
+  size_t event_batches = 0;
+  size_t batched_publications = 0;
+  size_t interrupted_event_batches = 0;
   bool ready = false;
   bool failed = false;
   std::string reason;
@@ -62,6 +66,7 @@ class NativeExecutionPlan {
   // false means rejection before submission; submission failures throw and
   // poison the plan, so a partially submitted chain can never run twice.
   bool replay();
+  void set_event_batching(bool enabled);
   NativeReplayStats stats() const;
   std::vector<NativeAccessDiagnostic> dependency_diagnostics() const;
 

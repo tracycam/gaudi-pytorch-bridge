@@ -581,6 +581,12 @@ NativeReplayStats HPUGraph::native_replay_stats() const {
   return native_plan_ ? native_plan_->stats() : NativeReplayStats{};
 }
 
+void HPUGraph::set_native_event_batching(bool enabled) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  TORCH_CHECK(native_plan_, "Graph has no native execution plan");
+  native_plan_->set_event_batching(enabled);
+}
+
 std::vector<NativeAccessDiagnostic> HPUGraph::native_dependency_diagnostics() const {
   return native_plan_ ? native_plan_->dependency_diagnostics()
                       : std::vector<NativeAccessDiagnostic>{};

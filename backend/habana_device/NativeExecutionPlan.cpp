@@ -13,6 +13,7 @@
 #include "backend/helpers/collective_kernel_info.h"
 #include "backend/helpers/tensor_info.h"
 #include "backend/synapse_helpers/hccl_communicator.h"
+#include "backend/synapse_helpers/replay_event_batch.h"
 #include "pytorch_helpers/habana_helpers/logging.h"
 
 namespace at::hpu {
@@ -92,6 +93,8 @@ struct NativeExecutionPlan::Impl {
     size_t first;
     size_t last;
     std::shared_ptr<habana::HcclCommunicator> communicator;
+    std::shared_ptr<synapse_helpers::ReplayEventBatch::Footprint> footprint;
+    size_t workspace_size;
   };
   std::vector<StreamRegion> regions;
 
@@ -377,8 +380,17 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
         communicators.push_back(std::move(communicator));
       }
       for (const auto& region : impl_->dependencies.serial_regions(accesses, communicator_keys)) {
+        std::vector<synapse_helpers::device_ptr> addresses;
+        size_t workspace = 0;
+        for (size_t i=region.collectives.front(); i<=region.collectives.back(); ++i) {
+          addresses.insert(addresses.end(), accesses[i].reads.begin(), accesses[i].reads.end());
+          addresses.insert(addresses.end(), accesses[i].writes.begin(), accesses[i].writes.end());
+          workspace = std::max(workspace, size_t(impl_->commands[i].launcher->workspace_size_));
+        }
         impl_->regions.push_back({region.collectives.front(), region.collectives.back(),
-                                  communicators[region.collectives.front()]});
+                                  communicators[region.collectives.front()],
+                                  std::make_shared<synapse_helpers::ReplayEventBatch::Footprint>(std::move(addresses)),
+                                  workspace});
         impl_->stats.coalesced_collectives += region.collectives.size();
       }
     }
@@ -437,8 +449,16 @@ bool NativeExecutionPlan::replay() {
       auto& device = habana::HPUDeviceContext::get_device();
       auto& compute = device.get_stream(impl_->commands.front().stream);
       synapse_helpers::stream* communication = nullptr;
+      std::unique_ptr<synapse_helpers::ReplayEventBatch> event_batch;
       bool entered = false;
       auto leave = [&]() {
+        if (event_batch) {
+          event_batch->finish();
+          ++impl_->stats.event_batches;
+          impl_->stats.batched_publications += event_batch->publications();
+          impl_->stats.interrupted_event_batches += event_batch->interrupted();
+          event_batch.reset();
+        }
         if (entered) {
           // Publish the mapped collective sequence back to the communicator's
           // original FIFO before another ordinary HCCL job may run there.
@@ -458,6 +478,13 @@ bool NativeExecutionPlan::replay() {
             device.record_and_wait_for_event(*communication, compute,
                                              [communicator]() {});
             entered = true;
+            if (impl_->stats.event_batching) {
+              // Reserve the region's largest workspace before extending any
+              // per-command lifetime to the region boundary.
+              device.get_workspace_buffer(impl_->regions[region_index].workspace_size);
+              event_batch = std::make_unique<synapse_helpers::ReplayEventBatch>(
+                  device, compute, *impl_->regions[region_index].footprint);
+            }
           }
           if (entered && command.access.collectives) {
             command.launcher->collective_kernels_info_->SetReplayStream(&compute);
@@ -503,6 +530,12 @@ bool NativeExecutionPlan::replay() {
 NativeReplayStats NativeExecutionPlan::stats() const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   return impl_->stats;
+}
+
+void NativeExecutionPlan::set_event_batching(bool enabled) {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  TORCH_CHECK(impl_->stats.ready && !impl_->stats.failed, "Native plan is not ready");
+  impl_->stats.event_batching = enabled;
 }
 
 std::vector<NativeAccessDiagnostic>

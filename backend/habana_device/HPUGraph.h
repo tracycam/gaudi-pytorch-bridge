@@ -143,6 +143,7 @@ struct HPUGraph {
   void destroy();
   NativeExecutionPlan* native_capture_plan();
   NativeReplayStats native_replay_stats() const;
+  void set_native_event_batching(bool enabled);
   std::vector<NativeAccessDiagnostic> native_dependency_diagnostics() const;
   std::unordered_set<size_t> get_user_input_match_indices() {
     return user_input_match_indices_;

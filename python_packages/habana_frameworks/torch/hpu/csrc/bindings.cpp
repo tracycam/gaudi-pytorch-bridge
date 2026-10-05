@@ -303,11 +303,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     result["incomplete_access_commands"] = stats.incomplete_access_commands;
     result["coalesced_collectives"] = stats.coalesced_collectives;
     result["coalesced_replays"] = stats.coalesced_replays;
+    result["event_batching"] = stats.event_batching;
+    result["event_batches"] = stats.event_batches;
+    result["batched_publications"] = stats.batched_publications;
+    result["interrupted_event_batches"] = stats.interrupted_event_batches;
     result["replays"] = stats.replays;
     result["ready"] = stats.ready;
     result["failed"] = stats.failed;
     result["reason"] = stats.reason;
     return result;
+  });
+  m.def("native_replay_event_batching", [](at::hpu::HPUGraph& graph, bool enabled) {
+    graph.set_native_event_batching(enabled);
   });
   m.def("native_dependency_diagnostics", [](at::hpu::HPUGraph& graph) {
     py::list result;

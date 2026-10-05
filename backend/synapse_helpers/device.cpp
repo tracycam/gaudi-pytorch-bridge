@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 #include "backend/synapse_helpers/device.h"
+#include "backend/synapse_helpers/replay_event_batch.h"
 #include <absl/types/span.h>
 #include <hl_logger/hllog_core.hpp>
 #include <synapse_api.h>
@@ -1782,6 +1783,7 @@ void device::cleanup_workspace_buffer() {
 void device::add_wait_events_on_stream(
     const std::vector<device_ptr>& input_tensors,
     stream& stream) {
+  if (ReplayEventBatch::wait_is_internal(*this, stream, input_tensors)) return;
   if (input_tensors.size() > 1) {
     for (auto& event : sem_.get_wait_events(input_tensors)) {
       event->stream_wait_event(stream);
@@ -1798,6 +1800,7 @@ void device::add_wait_events_on_stream(
 std::vector<shared_event> device::get_wait_events_on_stream(
     const std::vector<device_ptr>& input_tensors,
     stream& stream) {
+  ReplayEventBatch::interrupt();
   if (input_tensors.size() > 1) {
     return sem_.get_wait_events(input_tensors);
   }
@@ -1816,6 +1819,7 @@ std::vector<shared_event> device::get_wait_events_on_stream(
 void device::add_wait_event_on_stream(
     const std::string& event_id,
     stream& stream) {
+  ReplayEventBatch::interrupt();
   sem_.enqueue_wait_event(event_id, stream);
 }
 
@@ -1823,6 +1827,7 @@ void device::register_producer_on_stream(
     std::vector<device_ptr>&& bound_addresses,
     stream& stream,
     event_done_callback done_cb) {
+  if (ReplayEventBatch::defer(*this, stream, bound_addresses, done_cb)) return;
   sem_.add_producer(std::move(bound_addresses), stream, std::move(done_cb));
 }
 
@@ -1837,11 +1842,13 @@ void device::register_producer_on_stream(
     const std::string& event_id,
     stream& stream,
     event_done_callback done_cb) {
+  ReplayEventBatch::interrupt();
   sem_.add_producer(
       std::move(bound_addresses), event_id, stream, std::move(done_cb));
 }
 
 void device::register_producer_on_stream(stream& stream, shared_event event) {
+  ReplayEventBatch::interrupt();
   if (!event->is_partial()) {
     PT_SYNHELPER_FATAL(
         "Only mapped partial events can be registered without address");
