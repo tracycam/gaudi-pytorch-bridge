@@ -118,9 +118,11 @@ Py_hash_t graph_dataclass_hash(
   py::tuple result(fields.size());
   size_t index = 0;
   for (py::handle field : fields) {
-    auto name = field.attr("name");
-    result[index++] = py::make_tuple(
-        name, py::int_(graph_input_hash(value.attr(name), autocast, fallback)));
+    py::object key = field.attr("name");
+    py::object name = field.attr("name");
+    py::object child = value.attr(name);
+    auto child_hash = graph_input_hash(child, autocast, fallback);
+    result[index++] = py::make_tuple(key, py::int_(child_hash));
   }
   return py::hash(result);
 }
@@ -132,9 +134,10 @@ void graph_copy_dataclass(
     bool skip_identity,
     const py::function& fallback) {
   for (py::handle field : fields) {
-    auto name = field.attr("name");
-    py::object d = dst.attr(name);
-    py::object s = src.attr(name);
+    py::object dst_name = field.attr("name");
+    py::object d = dst.attr(dst_name);
+    py::object src_name = field.attr("name");
+    py::object s = src.attr(src_name);
     if (skip_identity && d.is(s) &&
         (THPVariable_CheckExact(d.ptr()) || PyDict_CheckExact(d.ptr()) ||
          PyList_CheckExact(d.ptr()) || PyTuple_CheckExact(d.ptr()))) continue;
