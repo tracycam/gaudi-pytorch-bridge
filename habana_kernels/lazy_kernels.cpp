@@ -15,10 +15,13 @@
 #include "habana_kernels/lazy_kernels.h"
 #include <ATen/InferSize.h>
 #include <ATen/native/TypeProperties.h>
+#include <ATen/ops/_foreach_copy_native.h>
+#include <c10/core/InferenceMode.h>
 #include <c10/core/SymIntArrayRef.h>
 #include <cstdlib>
 #include <ctime>
 #include <utility>
+#include <unordered_set>
 #include "backend/backend_meta.h"
 #include "backend/habana_device/HPUAllocator.h"
 #include "backend/habana_device/PinnedMemoryAllocator.h"
@@ -917,7 +920,11 @@ static Tensor permute_hpu_lazy_phy(const Tensor& self, IntArrayRef dims_in) {
   RUN_MAYBE_WITH_ACC_THREAD(permute, kernel);
 }
 
-Tensor& copy_hpu_lazy_H2D(Tensor& self, const Tensor& src_, bool non_blocking) {
+Tensor& copy_hpu_lazy_H2D(
+    Tensor& self,
+    const Tensor& src_,
+    bool non_blocking,
+    std::vector<std::pair<at::Tensor, at::Tensor>>* batch = nullptr) {
   PT_LAZY_TRACE;
 
   habana_lazy::NoAccThread no_acc_thread;
@@ -1018,7 +1025,13 @@ Tensor& copy_hpu_lazy_H2D(Tensor& self, const Tensor& src_, bool non_blocking) {
   // self may have been resized, so re-set its size and strides
   self_internal_tesor.unsafeGetTensorImpl()->set_sizes_and_strides(
       self.sizes(), self.strides());
-  if (processed) {
+  if (batch) {
+    // The foreach admission below excludes casts, views and pending IR.
+    // Preserve the ordinary lazy Tensor preparation, but submit its DMA once
+    // all independent destinations have been prepared.
+    HABANA_ASSERT(!processed && src.scalar_type() == self_internal_tesor.scalar_type());
+    batch->emplace_back(src, self_internal_tesor);
+  } else if (processed) {
     auto internal_tensor_from_copy = copy_hpu_(
         self_internal_tesor,
         new_tensor,
@@ -1064,8 +1077,60 @@ Tensor& copy_hpu_lazy_H2D(Tensor& self, const Tensor& src_, bool non_blocking) {
 
   // Return the self tensor, as copy_hpu_ doesn't create a new tensor and
   // returns the dst
-  flush_op();
+  if (!batch) flush_op();
   return self;
+}
+
+void foreach_copy_hpu_lazy_(
+    at::TensorList self,
+    at::TensorList sources,
+    bool non_blocking) {
+  habana_lazy::NoAccThread no_acc_thread;
+  auto admissible = [&] {
+    if (!c10::InferenceMode::is_enabled() || !non_blocking || self.empty() ||
+        self.size() != sources.size() ||
+        get_device_lazy_execution_context()->getCapturing() ||
+        get_habana_lazy_executor().getExecutionMode() == kLOWERING) return false;
+    std::unordered_set<const c10::StorageImpl*> destinations;
+    for (size_t i=0; i<self.size(); ++i) {
+      const auto& dst = self[i];
+      const auto& src = sources[i];
+      if (!dst.defined() || !src.defined() || !src.device().is_cpu() ||
+          dst.device().type() != c10::DeviceType::HPU ||
+          dst.device() != self[0].device() || dst.requires_grad() || src.requires_grad() ||
+          !dst.is_contiguous() || !src.is_contiguous() || dst.storage_offset() != 0 ||
+          dst.suggest_memory_format() != c10::MemoryFormat::Contiguous ||
+          src.suggest_memory_format() != c10::MemoryFormat::Contiguous ||
+          !dst.sizes().equals(src.sizes()) || dst.scalar_type() != src.scalar_type() ||
+          !dst.numel() || habana::is_tensor_const(src)) return false;
+      // Long/double have a separate physical representation on Gaudi. Leave
+      // them, broadcasting and dtype conversion to the existing copy kernel.
+      if (src.scalar_type() != at::kInt && src.scalar_type() != at::kFloat &&
+          src.scalar_type() != at::kBFloat16) return false;
+      auto lazy = TryGetHbLazyTensor(dst);
+      if (!lazy || !lazy->isStorageAttached() || lazy->IsExecutionInProgress() ||
+          lazy->getDataPtr()->stride_params.has_value() ||
+          !lazy->CurrentIrValue() || !lazy->CurrentIrValue().IsHpuInputNode()) return false;
+      auto data = lazy->EvaluateTensorData();
+      if (!data.defined() || !data.has_storage() ||
+          data.scalar_type() != src.scalar_type() ||
+          !destinations.insert(data.storage().unsafeGetStorageImpl()).second) return false;
+    }
+    return true;
+  };
+  if (!admissible()) {
+    at::native::foreach_tensor_copy_list_kernel_slow_(self, sources, non_blocking);
+    return;
+  }
+  PT_BRIDGE_LAMBDA_BEGIN("BatchedHostToDeviceCopy");
+  std::vector<std::pair<at::Tensor, at::Tensor>> batch;
+  batch.reserve(self.size());
+  for (size_t i=0; i<self.size(); ++i) {
+    auto dst = self[i];
+    copy_hpu_lazy_H2D(dst, sources[i], non_blocking, &batch);
+  }
+  habana_helpers::copy_scalars_to_device(batch, c10::hpu::getCurrentHPUStream());
+  flush_op();
 }
 
 Tensor& copy_hpu_lazy_(Tensor& self, const Tensor& src, bool non_blocking) {

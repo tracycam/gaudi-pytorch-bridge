@@ -2134,6 +2134,7 @@ TORCH_LIBRARY_IMPL(aten, HPU, m) {
   // to have the same implementation as matmul forward in autograd.
   m.impl("matmul", matmul_inference);
   m.impl("_fused_sdp_choice", fused_sdp_choice_hpu);
+  m.impl("_foreach_copy_", habana_lazy::foreach_copy_hpu_lazy_);
 }
 
 TORCH_LIBRARY_IMPL(torch_scatter, HPU, m) {

@@ -40,6 +40,10 @@ at::Tensor& copy_hpu_lazy_(
     at::Tensor& self,
     const at::Tensor& src,
     bool non_blocking);
+void foreach_copy_hpu_lazy_(
+    at::TensorList self,
+    at::TensorList src,
+    bool non_blocking);
 at::Tensor as_strided_hpu_lazy(
     const at::Tensor& self,
     at::IntArrayRef size,

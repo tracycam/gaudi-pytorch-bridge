@@ -1400,6 +1400,10 @@ synapse_error device::copy_data_to_device(
   synapse_helpers::stream& stream_handle = get_stream(hpu_stream, DMA_H2D);
   for (std::size_t i = 0; i < transfers.size(); ++i) {
     sem_.enqueue_wait_event(transfers[i].dst_event_addr, stream_handle);
+    // Match the single-copy source-read dependency contract. A host tensor
+    // can be the destination of an outstanding non-blocking D2H copy.
+    sem_.enqueue_wait_event(transfers[i].src, stream_handle);
+    wait_for_host_event(transfers[i].src);
   }
 
   std::vector<std::uint64_t> mapped_srcs(transfers.size());
