@@ -8,6 +8,7 @@
 #include <array>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include "backend/helpers/collective_kernel_info.h"
 #include "backend/helpers/tensor_info.h"
@@ -267,6 +268,7 @@ void NativeExecutionPlan::append(
   for (const auto& tensor : recipe_tensors) {
     directions.emplace(tensor.tensorId, tensor.isInput != 0);
   }
+  std::unordered_set<uint64_t> active_bindings;
   auto resolve = [&](uint64_t address, std::string label) {
     bool complete = true;
     auto key = impl_->allocation_key(address, complete);
@@ -280,6 +282,13 @@ void NativeExecutionPlan::append(
     if (!launcher.recipe_ || !binding.pTensorAddress) {
       continue;
     }
+    // patch_launch_info retains entries whose tensors disappeared during
+    // compilation. RetrieveLaunchIds is the authoritative live launch set;
+    // the invalid sentinel is not a Tensor read or write. Keep the original
+    // SDK bindings unchanged, and do not exempt any unknown *valid* ID.
+    if (binding.tensorId == synapse_helpers::INVALID_SYN_TENSOR_ID) {
+      continue;
+    }
     auto direction = directions.find(binding.tensorId);
     if (direction == directions.end()) {
       command.access.complete = false;
@@ -288,10 +297,18 @@ void NativeExecutionPlan::append(
           ": missing recipe tensor ID " + std::to_string(binding.tensorId));
       continue;
     }
+    active_bindings.insert(binding.tensorId);
     auto key = resolve(binding.pTensorAddress,
                        binding.tensorName ? binding.tensorName : "");
     (direction->second ? command.access.reads : command.access.writes)
         .push_back(key);
+  }
+  for (const auto& tensor : recipe_tensors) {
+    if (!active_bindings.count(tensor.tensorId)) {
+      command.access.complete = false;
+      command.access_issues.push_back(
+          "live recipe tensor has no nonzero binding: " + std::to_string(tensor.tensorId));
+    }
   }
   std::vector<PtTensorInfoShared> collective_reads;
   std::vector<PtTensorInfoShared> collective_writes;
