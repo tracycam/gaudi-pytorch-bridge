@@ -939,10 +939,14 @@ void graph::launch(
         "Recipe handle: ",
         fmt::ptr(recipe_handle.syn_recipe_handle_));
 
-    habana_lazy::log_dev_mem_stats(
-        "Post-Tensors",
-        recipe_handle.recipe_name_,
-        device.get_device_memory().get_total_memory_required(addresses));
+    // Argument evaluation otherwise scans/locks allocator metadata even when
+    // log_dev_mem_stats immediately returns because memory logging is disabled.
+    if (IS_MEMLOG_DEBUG_ENABLED) {
+      habana_lazy::log_dev_mem_stats(
+          "Post-Tensors",
+          recipe_handle.recipe_name_,
+          device.get_device_memory().get_total_memory_required(addresses));
+    }
     towl::emitDeviceMemorySummary("Post-Tensors");
 
     uint32_t flags{0};
