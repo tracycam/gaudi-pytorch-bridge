@@ -1087,11 +1087,12 @@ void foreach_copy_hpu_lazy_(
     bool non_blocking) {
   habana_lazy::NoAccThread no_acc_thread;
   auto admissible = [&] {
-    if (!c10::InferenceMode::is_enabled() || !non_blocking || self.empty() ||
+    if (!c10::InferenceMode::is_enabled() || !non_blocking || self.size() < 2 || self.size() > 128 ||
         self.size() != sources.size() ||
         get_device_lazy_execution_context()->getCapturing() ||
         get_habana_lazy_executor().getExecutionMode() == kLOWERING) return false;
     std::unordered_set<const c10::StorageImpl*> destinations;
+    size_t total_bytes = 0;
     for (size_t i=0; i<self.size(); ++i) {
       const auto& dst = self[i];
       const auto& src = sources[i];
@@ -1107,6 +1108,11 @@ void foreach_copy_hpu_lazy_(
       // them, broadcasting and dtype conversion to the existing copy kernel.
       if (src.scalar_type() != at::kInt && src.scalar_type() != at::kFloat &&
           src.scalar_type() != at::kBFloat16) return false;
+      // This is a small-input optimization. Large/pinned transfers retain the
+      // ordinary path instead of paying for a large additional host snapshot.
+      const auto bytes = src.nbytes();
+      if (bytes > 64*1024 || total_bytes > 1024*1024-bytes) return false;
+      total_bytes += bytes;
       auto lazy = TryGetHbLazyTensor(dst);
       if (!lazy || !lazy->isStorageAttached() || lazy->IsExecutionInProgress() ||
           lazy->getDataPtr()->stride_params.has_value() ||
