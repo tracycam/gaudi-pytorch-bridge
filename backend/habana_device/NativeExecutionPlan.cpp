@@ -39,6 +39,7 @@ struct RecipeCommand {
   std::vector<synLaunchTensorInfo> live_bindings;
   std::vector<size_t> external_events;
   NativeCommandAccess access;
+  std::vector<std::string> access_issues;
 };
 
 bool static_recipe(
@@ -261,6 +262,15 @@ void NativeExecutionPlan::append(
   for (const auto& tensor : recipe_tensors) {
     directions.emplace(tensor.tensorId, tensor.isInput != 0);
   }
+  auto resolve = [&](uint64_t address, std::string label) {
+    bool complete = true;
+    auto key = impl_->allocation_key(address, complete);
+    command.access.complete &= complete;
+    if (!complete) {
+      command.access_issues.push_back(std::move(label) + ": no unique retained allocation");
+    }
+    return key;
+  };
   for (const auto& binding : bindings) {
     if (!launcher.recipe_ || !binding.pTensorAddress) {
       continue;
@@ -268,10 +278,13 @@ void NativeExecutionPlan::append(
     auto direction = directions.find(binding.tensorId);
     if (direction == directions.end()) {
       command.access.complete = false;
+      command.access_issues.push_back(
+          std::string(binding.tensorName ? binding.tensorName : "") +
+          ": missing recipe tensor ID " + std::to_string(binding.tensorId));
       continue;
     }
-    auto key = impl_->allocation_key(binding.pTensorAddress,
-                                      command.access.complete);
+    auto key = resolve(binding.pTensorAddress,
+                       binding.tensorName ? binding.tensorName : "");
     (direction->second ? command.access.reads : command.access.writes)
         .push_back(key);
   }
@@ -280,12 +293,12 @@ void NativeExecutionPlan::append(
   if (!command.launcher->collective_kernels_info_->ReplayAccesses(
           collective_reads, collective_writes)) {
     command.access.complete = false;
+    command.access_issues.emplace_back("unsupported collective access description");
   }
   auto collect = [&](const auto& values, auto& keys) {
     for (const auto& tensor : values) {
       if (tensor->get_numel()) {
-        keys.push_back(impl_->allocation_key(
-            tensor->get_buffer_start_syn(), command.access.complete));
+        keys.push_back(resolve(tensor->get_buffer_start_syn(), tensor->get_syn_name()));
       }
     }
   };
@@ -332,7 +345,9 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
     // First adapter: all collectives must be strict adjacent RAW chains, use
     // one communicator and have no partial readiness or unknown accesses.
     // Independent/mixed/partial chains retain the original stream policy.
-    if (impl_->stats.collectives && !impl_->stats.external_events &&
+    // A single collective replaces two cross-stream waits with two FIFO guards
+    // and adds records; the paired probe confirmed that this regresses latency.
+    if (impl_->stats.collectives > 1 && !impl_->stats.external_events &&
         !impl_->stats.incomplete_access_commands &&
         impl_->stats.serial_collectives == impl_->stats.collectives &&
         !GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
@@ -469,6 +484,21 @@ bool NativeExecutionPlan::replay() {
 NativeReplayStats NativeExecutionPlan::stats() const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   return impl_->stats;
+}
+
+std::vector<NativeAccessDiagnostic>
+NativeExecutionPlan::dependency_diagnostics() const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  std::vector<NativeAccessDiagnostic> result;
+  result.reserve(impl_->commands.size());
+  for (size_t i = 0; i < impl_->commands.size(); ++i) {
+    const auto& command = impl_->commands[i];
+    const auto& access = command.access;
+    result.push_back({i, access.compute, access.collectives, access.external_events,
+                      access.complete, access.reads.size(), access.writes.size(),
+                      command.access_issues});
+  }
+  return result;
 }
 
 } // namespace at::hpu

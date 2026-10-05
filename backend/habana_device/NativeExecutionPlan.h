@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 #include "backend/kernel/hpu_habana_cache.h"
 
 namespace at::hpu {
@@ -24,6 +25,17 @@ struct NativeReplayStats {
   bool ready = false;
   bool failed = false;
   std::string reason;
+};
+
+struct NativeAccessDiagnostic {
+  size_t command;
+  bool compute;
+  size_t collectives;
+  size_t external_events;
+  bool complete;
+  size_t reads;
+  size_t writes;
+  std::vector<std::string> issues;
 };
 
 // An HPUGraph-owned compiled execution plan. The first admitted subset retains
@@ -51,6 +63,7 @@ class NativeExecutionPlan {
   // poison the plan, so a partially submitted chain can never run twice.
   bool replay();
   NativeReplayStats stats() const;
+  std::vector<NativeAccessDiagnostic> dependency_diagnostics() const;
 
  private:
   struct Impl;

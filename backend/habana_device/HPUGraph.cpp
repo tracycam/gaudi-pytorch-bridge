@@ -581,6 +581,11 @@ NativeReplayStats HPUGraph::native_replay_stats() const {
   return native_plan_ ? native_plan_->stats() : NativeReplayStats{};
 }
 
+std::vector<NativeAccessDiagnostic> HPUGraph::native_dependency_diagnostics() const {
+  return native_plan_ ? native_plan_->dependency_diagnostics()
+                      : std::vector<NativeAccessDiagnostic>{};
+}
+
 SingleHPUGraph::~SingleHPUGraph() {
   graph_.reset();
   input_vals_.clear();

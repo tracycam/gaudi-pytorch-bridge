@@ -309,6 +309,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     result["reason"] = stats.reason;
     return result;
   });
+  m.def("native_dependency_diagnostics", [](at::hpu::HPUGraph& graph) {
+    py::list result;
+    for (const auto& entry : graph.native_dependency_diagnostics()) {
+      py::dict item;
+      item["command"] = entry.command;
+      item["compute"] = entry.compute;
+      item["collectives"] = entry.collectives;
+      item["external_events"] = entry.external_events;
+      item["complete"] = entry.complete;
+      item["reads"] = entry.reads;
+      item["writes"] = entry.writes;
+      item["issues"] = entry.issues;
+      result.append(std::move(item));
+    }
+    return result;
+  });
   m.def(
       "capture_begin", [](at::hpu::HPUGraph& graph) { graph.capture_begin(); });
   m.def("capture_begin", [](at::hpu::HPUGraph& graph, bool dry_run) {

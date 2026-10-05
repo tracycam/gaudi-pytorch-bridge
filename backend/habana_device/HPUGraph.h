@@ -23,6 +23,7 @@ namespace at::hpu {
 
 class NativeExecutionPlan;
 struct NativeReplayStats;
+struct NativeAccessDiagnostic;
 
 struct SingleHPUGraph {
   SingleHPUGraph(
@@ -142,6 +143,7 @@ struct HPUGraph {
   void destroy();
   NativeExecutionPlan* native_capture_plan();
   NativeReplayStats native_replay_stats() const;
+  std::vector<NativeAccessDiagnostic> native_dependency_diagnostics() const;
   std::unordered_set<size_t> get_user_input_match_indices() {
     return user_input_match_indices_;
   }
