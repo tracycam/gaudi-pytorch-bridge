@@ -1685,11 +1685,14 @@ void RecipeLauncher::Launch(
     if (prepared_bindings_ && !recipe_) {
       // A captured collective-only command has no work on the recipe stream.
       // The collective launcher prepares both buffer dependencies on its own
-      // stream and retains tensors, address locks and the communicator until
-      // completion. Do not create a second compute resource holder/counter or
+      // stream and retains address locks and the communicator until completion.
+      // With LAZY_COLLECTIVES_HOLD_TENSORS it relies on this callback for Tensor
+      // ownership; an address lock prevents defrag, not Storage destruction.
+      // Do not create a second compute resource holder/counter or
       // enqueue recipe-stream waits for a recipe that does not exist.
       // Ordinary launches retain their existing adapter/lifetime behavior.
-      collective_kernels_info_->Launch(ptRefs, outPtRefs, true, [] {});
+      collective_kernels_info_->Launch(
+          ptRefs, outPtRefs, true, [bindings = prepared_bindings_]() {});
       return;
     }
     std::vector<synapse_helpers::device_ptr> ordinary_reads;
