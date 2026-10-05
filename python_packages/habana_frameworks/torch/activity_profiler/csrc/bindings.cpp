@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include <string>
 #include <vector>
@@ -33,9 +34,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         habana::profile::setup_profiler_sources(
             bridge, memory, mandatory_events, hardware);
       },
-      pybind11::arg("bridge") = "",
-      pybind11::arg("memory") = "",
-      pybind11::arg("mandatory_events") = "",
+      pybind11::arg("bridge") = false,
+      pybind11::arg("memory") = false,
+      pybind11::arg("mandatory_events") = std::vector<std::string>{},
       pybind11::arg("hardware") = true);
   m.def(
       "_setup_habana_profiler_configs",
