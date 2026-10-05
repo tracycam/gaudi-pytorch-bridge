@@ -9,7 +9,11 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device-replay', action='store_true')
+    parser.add_argument('--hardware-trace', action='store_true',
+                        help='After CPU validation, explicitly collect HPU activity for 16 replays')
     args = parser.parse_args()
+    if args.hardware_trace and not args.device_replay:
+        parser.error('--hardware-trace requires --device-replay')
     # Importing the bridge sets its normal profile_api[_light] marker. Reject
     # an externally configured hardware profile before that initialization.
     assert not os.getenv('HABANA_PROFILE'), 'probe must start without a hardware profile configuration'
@@ -57,6 +61,23 @@ def main():
             assert launches, 'CPU profiler did not collect bridge submission-thread calls'
             record.update(bridge_event_count=len(events), launch_events=len(launches),
                 native=_hpu_C.native_replay_stats(graph.hpu_graph))
+            if args.hardware_trace:
+                ht.hpu.synchronize()
+                with torch.inference_mode(), torch.profiler.profile(
+                        activities=[torch.profiler.ProfilerActivity.CPU,
+                                    torch.profiler.ProfilerActivity.HPU],
+                        debug_activities=[DebugActivity.BRIDGE_FUNCTION_CALLS]) as profile:
+                    for _ in range(16):
+                        with torch.profiler.record_function('HPUGraph.replay'):
+                            graph.replay()
+                    ht.hpu.synchronize()
+                assert torch.equal(y.cpu(), torch.full((8, 8), 14.))
+                trace = output/'bridge-replay-device.json'
+                profile.export_chrome_trace(str(trace))
+                record.update(hardware_trace=str(trace),
+                              after_hardware_trace=_hpu_C.native_replay_stats(graph.hpu_graph),
+                              hardware_trace_scope='Explicit diagnostic after CPU-only validation; '
+                                                   'profiled durations are not performance results')
         finally:
             ht.hpu.synchronize()
             graph.reset()
