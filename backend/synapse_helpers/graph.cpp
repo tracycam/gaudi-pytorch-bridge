@@ -851,24 +851,27 @@ void graph::launch(
   const auto& addresses =
       prepared ? prepared->allocator_addresses : ordinary_addresses;
 
-  size_t least_workspace_size = workspace_size;
-  const size_t tensor_mem =
-      device.get_device_memory().get_total_memory_required(addresses);
-  if (GET_ENV_FLAG_NEW(PT_ENABLE_WORKSPACE_MEMORY_SHRINK, 1)) {
-    const bool oom_may =
-        !device.get_device_memory().is_memory_available(tensor_mem);
-    if (oom_may) {
-      least_workspace_size =
-          device.get_least_workspace_size(tensor_mem, workspace_size);
-      // Set minimal size of workspace to 4MB to prevent it from being 0
-      constexpr size_t min_required_workspace_size = 4ULL * 1024 * 1024;
-      least_workspace_size =
-          std::max(least_workspace_size, min_required_workspace_size);
-      device.cleanup_workspace_buffer();
+  size_t tensor_mem;
+  device_ptr workspace_buffer;
+  {
+    PT_MOD_SCOPE(PT_SYNHELPER, __PRETTY_FUNCTION__, "LaunchMemoryPreflight");
+    size_t least_workspace_size = workspace_size;
+    tensor_mem = device.get_device_memory().get_total_memory_required(addresses);
+    if (GET_ENV_FLAG_NEW(PT_ENABLE_WORKSPACE_MEMORY_SHRINK, 1)) {
+      const bool oom_may =
+          !device.get_device_memory().is_memory_available(tensor_mem);
+      if (oom_may) {
+        least_workspace_size =
+            device.get_least_workspace_size(tensor_mem, workspace_size);
+        // Set minimal size of workspace to 4MB to prevent it from being 0
+        constexpr size_t min_required_workspace_size = 4ULL * 1024 * 1024;
+        least_workspace_size =
+            std::max(least_workspace_size, min_required_workspace_size);
+        device.cleanup_workspace_buffer();
+      }
     }
+    workspace_buffer = device.get_workspace_buffer(least_workspace_size);
   }
-  const auto workspace_buffer =
-      device.get_workspace_buffer(least_workspace_size);
 
   habana_lazy::log_dev_mem_stats(
       "Post-Workspace", recipe_handle.recipe_name_, workspace_size);
@@ -891,8 +894,11 @@ void graph::launch(
   synStatus status = synStatus::synSuccess;
 
   {
-    address_lock = std::make_unique<device_ptr_lock>(
-        device.lock_addresses(absl::Span<const device_ptr>(addresses)));
+    {
+      PT_MOD_SCOPE(PT_SYNHELPER, __PRETTY_FUNCTION__, "LaunchAddressLease");
+      address_lock = std::make_unique<device_ptr_lock>(
+          device.lock_addresses(absl::Span<const device_ptr>(addresses)));
+    }
     auto iter = inputs_and_outputs_info.begin();
     size_t index = 0;
     for (const auto address : *address_lock) {
@@ -959,6 +965,7 @@ void graph::launch(
         [](shared_event& event) -> synEventHandle { return *event; });
 
     if (!GET_ENV_FLAG_NEW(PT_COMPILE_ONLY_MODE)) {
+      PT_MOD_SCOPE(PT_SYNHELPER, __PRETTY_FUNCTION__, "LaunchSynapseSubmit");
       status = synLaunchWithExternalEvents(
           compute_stream,
           inputs_and_outputs_info.data(),
