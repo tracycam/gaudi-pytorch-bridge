@@ -1026,11 +1026,12 @@ Tensor& copy_hpu_lazy_H2D(
   self_internal_tesor.unsafeGetTensorImpl()->set_sizes_and_strides(
       self.sizes(), self.strides());
   if (batch) {
-    // The foreach admission below excludes casts, views and pending IR.
+    // The foreach admission below excludes dtype mismatches, views and pending IR.
     // Preserve the ordinary lazy Tensor preparation, but submit its DMA once
     // all independent destinations have been prepared.
-    HABANA_ASSERT(!processed && src.scalar_type() == self_internal_tesor.scalar_type());
-    batch->emplace_back(src, self_internal_tesor);
+    auto transfer_source = processed ? new_tensor : src;
+    HABANA_ASSERT(transfer_source.scalar_type() == self_internal_tesor.scalar_type());
+    batch->emplace_back(std::move(transfer_source), self_internal_tesor);
   } else if (processed) {
     auto internal_tensor_from_copy = copy_hpu_(
         self_internal_tesor,
@@ -1114,10 +1115,10 @@ void foreach_copy_hpu_lazy_(
             src.suggest_memory_format() != c10::MemoryFormat::Contiguous ||
             !dst.sizes().equals(src.sizes()) || dst.scalar_type() != src.scalar_type() ||
             !dst.numel() || habana::is_tensor_const(src)) return false;
-        // Long/double have a separate physical representation on Gaudi. Leave
-        // them, broadcasting and dtype conversion to the existing copy kernel.
+        // Reuse the ordinary Long preprocessing; never copy eight-byte logical
+        // values into Gaudi's four-byte physical representation.
         if (src.scalar_type() != at::kInt && src.scalar_type() != at::kFloat &&
-            src.scalar_type() != at::kBFloat16) return false;
+            src.scalar_type() != at::kBFloat16 && src.scalar_type() != at::kLong) return false;
         // This is a small-input optimization. Large transfers retain the
         // ordinary path instead of paying for a large additional host snapshot.
         const auto bytes = src.nbytes();
@@ -1128,8 +1129,10 @@ void foreach_copy_hpu_lazy_(
             lazy->getDataPtr()->stride_params.has_value() ||
             !lazy->CurrentIrValue() || !lazy->CurrentIrValue().IsHpuInputNode()) return false;
         auto data = lazy->EvaluateTensorData();
+        const auto physical_type = habana_helpers::is_downcast_to_int_needed(src.scalar_type())
+            ? at::kInt : src.scalar_type();
         if (!data.defined() || !data.has_storage() ||
-            data.scalar_type() != src.scalar_type() ||
+            data.scalar_type() != physical_type ||
             !destinations.insert(data.storage().unsafeGetStorageImpl()).second) return false;
       }
       return true;
