@@ -41,6 +41,9 @@ def main():
                 tensors = [torch.zeros((64, 64), dtype=dtype, device='hpu')
                            for _ in range(inputs)]
                 state = torch.zeros_like(tensors[0])
+                if 'device_identity' not in result:
+                    from probe_device_identity import verify_device
+                    result['device_identity'] = verify_device()
                 ht.core.mark_step()
                 ht.hpu.synchronize()
                 graph = ht.hpu.HPUGraph()

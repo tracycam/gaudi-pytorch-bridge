@@ -39,6 +39,8 @@ def main():
                   profile_api_marker=os.getenv('HABANA_PROFILE'))
     if args.device_replay:
         x = torch.ones((8, 8), device='hpu')
+        from probe_device_identity import verify_device
+        record['device_identity'] = verify_device()
         ht.core.mark_step()
         graph = ht.hpu.HPUGraph()
         try:
@@ -75,6 +77,7 @@ def main():
                 trace = output/'bridge-replay-device.json'
                 profile.export_chrome_trace(str(trace))
                 record.update(hardware_trace=str(trace),
+                              hardware_trace_requested=True,
                               after_hardware_trace=_hpu_C.native_replay_stats(graph.hpu_graph),
                               hardware_trace_scope='Explicit diagnostic after CPU-only validation; '
                                                    'profiled durations are not performance results')
