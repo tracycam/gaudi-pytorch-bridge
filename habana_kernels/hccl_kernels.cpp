@@ -270,6 +270,7 @@ void collective(
                  deviceCtxt = deviceCtxt,
                  replay_stream = replay_stream,
                  event_lists = event_lists,
+                 input_storage_ptr = input_storage_ptr,
                  output_storage_ptr = output_storage_ptr,
                  pr = pr,
                  inline_submission]() mutable {
@@ -283,7 +284,7 @@ void collective(
           ", stream = ",
           collective_stream);
 
-      if (GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
+      if (!replay_stream && GET_ENV_FLAG_NEW(PT_HPU_ENABLE_SFG)) {
         auto& stream = deviceCtxt->get_stream_fromhandle(collective_stream);
         for (auto& event : event_lists) {
           event->stream_wait_event(stream);
