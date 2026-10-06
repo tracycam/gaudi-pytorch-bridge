@@ -44,6 +44,7 @@ from ._utils import (
 )
 from .events import *
 from .graphs import *
+from .input_buffers import InputBufferCache
 from .memory import *
 from .metrics import *
 from .random import *

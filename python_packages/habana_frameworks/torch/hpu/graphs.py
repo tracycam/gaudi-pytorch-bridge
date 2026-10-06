@@ -74,6 +74,16 @@ class HPUGraph:
         """
         _hpu_C.replay(self.hpu_graph, [], asynchronous)
 
+    def execution_info(self):
+        """Return a snapshot of compiled execution coverage and rejection.
+
+        This is an out-of-band diagnostic, not a submission or timing API.
+        ``ready`` indicates plan admission, while prepared/replayed command
+        counts describe actual coverage. A ready plan need not prepare every
+        command. The snapshot has no Tensor values or model-specific fields.
+        """
+        return dict(_hpu_C.native_replay_stats(self.hpu_graph))
+
     def replay_with_inputs(self, tlistI: list[torch.Tensor] | None = None, asynchronous=False):
         r"""
         Replays the HPU work captured by this graph.
