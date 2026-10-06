@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Normal graph replay versus recipe/binding count; paired runs, not model TPS."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,9 +29,14 @@ def main():
     import habana_frameworks.torch as ht
     from habana_frameworks.torch import _hpu_C
     from importlib.metadata import version
+    stats = getattr(_hpu_C, 'native_replay_stats', None)
+    if args.require_native and stats is None:
+        parser.error('--require-native needs candidate bridge diagnostics')
     output = Path(os.environ['PROBE_OUT'])
     result = dict(status='RUNNING', torch=torch.__version__,
                   bridge_version=version('habana-torch-plugin'), cases=[],
+                  benchmark_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  native_diagnostics_available=stats is not None,
                   scope='Hot static graph submission scalability; not model TPS or HBM bandwidth')
     def save():
         (output/'result.json').write_text(json.dumps(result, indent=2)+'\n')
@@ -64,7 +70,10 @@ def main():
                             graph.replay()
                             expected = torch.full((64,64), recipes*value, dtype=dtype)
                             assert torch.equal(state.cpu(), expected)
-                        before = _hpu_C.native_replay_stats(graph.hpu_graph)
+                        # Upstream and candidate run the exact same workload.
+                        # Candidate-only diagnostics are outside timed replay;
+                        # their absence must not reject the upstream control.
+                        before = stats(graph.hpu_graph) if stats is not None else None
                         if args.require_native:
                             assert before['ready'] and before['commands'] == recipes, before
                         samples = []
@@ -78,7 +87,7 @@ def main():
                             completed = time.perf_counter_ns()
                             samples.append(dict(enqueue_us=(submitted-begin)/1e3/args.replays,
                                                 complete_us=(completed-begin)/1e3/args.replays))
-                    after = _hpu_C.native_replay_stats(graph.hpu_graph)
+                    after = stats(graph.hpu_graph) if stats is not None else None
                     if args.require_native:
                         assert after['replays'] == 4 + 3*args.replays, after
                     result['cases'].append(dict(dtype=str(dtype), inputs=inputs, recipes=recipes,

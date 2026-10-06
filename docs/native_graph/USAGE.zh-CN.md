@@ -1,5 +1,12 @@
 # 使用 bridge 内部编译计划
 
+2026-10-05：应用接入和跨模型迁移入口见
+[APPLICATION-INTEGRATION.zh-CN.md](APPLICATION-INTEGRATION.zh-CN.md)。
+当前已验收组合为 bridge `47f28b972f9` + serving `a450e13`，MiMo B1 91.02 TPS；
+这不是原应用只换 wheel 的成绩。下文版本、性能和支持范围是早期检查点记录，
+最新范围见 [通用框架计划](GENERAL-FRAMEWORK-20261005.zh-CN.md) 和
+[交付记录](INPUT-AND-PREPARED-REGIONS-20261005.zh-CN.md)。
+
 2026-10-04 用户已要求继续，构建与实验恢复。追加 prepared launch 和 CPU-only
 profiler 已验收；版本区别、性能及未完成事项见
 [续行检查点](RESULTS-PREPARED-LAUNCH-20261004.zh-CN.md)。

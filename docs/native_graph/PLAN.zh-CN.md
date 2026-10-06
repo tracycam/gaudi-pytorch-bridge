@@ -1,5 +1,12 @@
 # 单一 bridge 原生执行核心：实施计划
 
+2026-10-05 当前方向：[通用框架与验收](GENERAL-FRAMEWORK-20261005.zh-CN.md)、
+[应用接入与迁移](APPLICATION-INTEGRATION.zh-CN.md)。用户允许通过通用接口改进
+应用接入，要求能力可迁移、执行核心与模型无关。最新 MiMo **bridge + serving**
+组合达到 91.02 TPS，见 [交付记录](INPUT-AND-PREPARED-REGIONS-20261005.zh-CN.md)。
+原应用只换 bridge 达到 90+ 及跨模型收益仍未证明，不能用组合结果代替。
+下文为初版阶段计划和当时状态，当前行动顺序以上述通用框架文档为准。
+
 最新检查点：[prepared launch 续行验收](RESULTS-PREPARED-LAUNCH-20261004.zh-CN.md)；续行方向：
 [Bridge 通用优化](OPTIMIZATION-DIRECTIONS-20261004.zh-CN.md)。下文阶段状态是早期记录，
 完整 70 层现已测得约 49 → 77 TPS，尚未达到 90 TPS。
