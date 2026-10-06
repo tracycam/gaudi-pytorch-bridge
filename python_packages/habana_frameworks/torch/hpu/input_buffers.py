@@ -61,6 +61,11 @@ class InputBufferCache:
             if len(self._buffers) > self.max_entries:
                 self._buffers.popitem(last=False)
         else:
+            if (destination.shape != source.shape or destination.dtype != source.dtype
+                    or destination.device.type != self.device.type
+                    or (self.device.index is not None and destination.device.index != self.device.index)
+                    or not destination.is_contiguous()):
+                raise RuntimeError("cached input layout was modified; clear the cache before rebinding")
             destination.copy_(source, non_blocking=non_blocking)
             self._buffers.move_to_end(key)
         return destination

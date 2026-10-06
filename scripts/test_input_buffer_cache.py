@@ -65,6 +65,18 @@ class InputBufferCacheTest(unittest.TestCase):
                 cache.copy("x", torch.ones(3), non_blocking=1)
         self.assertEqual(len(cache), 0)
 
+    @torch.no_grad()
+    def test_mutated_destination_layout_rejects_before_broadcasting(self):
+        cache = InputBufferCache("cpu")
+        destination = cache.copy("x", torch.ones((2, 3)))
+        destination.resize_(3, 2)
+        before = destination.clone()
+        with self.assertRaisesRegex(RuntimeError, "layout was modified"):
+            cache.copy("x", torch.zeros((2, 3)))
+        self.assertTrue(torch.equal(destination, before))
+        cache.clear()
+        self.assertEqual(cache.copy("x", torch.zeros((2, 3))).shape, (2, 3))
+
 
 if __name__ == "__main__":
     unittest.main()
