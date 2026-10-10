@@ -47,6 +47,10 @@ add_habana_library(
 
 target_link_libraries(jit_fork PUBLIC bindings torch ${TORCH_PYTHON_LIBRARY})
 
+# JIT logging includes env_flags.h before the bindings library is linked.
+# Order header generation before object compilation in parallel clean builds.
+add_dependencies(jit_fork pytorch_generate_env)
+
 target_include_directories(jit_fork PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 export(
