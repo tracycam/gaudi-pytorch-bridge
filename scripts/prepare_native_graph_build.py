@@ -47,6 +47,11 @@ def main():
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--torch-site", type=Path, required=True)
     parser.add_argument("--media-version", default="1.24.1.482")
+    parser.add_argument("--sdk-root", type=Path, default=Path("/"),
+                        help="SDK package root; user-local extracted packages are supported")
+    parser.add_argument("--media-wheel", type=Path,
+                        help="Retained official media wheel for offline preparation")
+    parser.add_argument("--media-wheel-sha256")
     parser.add_argument("--offline-dependencies-directory", type=Path)
     parser.add_argument("--jobs", type=int, default=32)
     args = parser.parse_args()
@@ -66,22 +71,33 @@ def main():
     run([str(python), "-m", "pip", "install", "--index-url", "https://pypi.org/simple",
          "--timeout", "20", "--retries", "1", "-r", str(source / "requirements.txt")], log)
 
-    index = "https://vault.habana.ai/artifactory/api/pypi/gaudi-python/simple/habana-media-loader/"
-    with urllib.request.urlopen(index, timeout=30) as response:
-        html = response.read().decode()
-    (work / "media-index.html").write_text(html)
-    matches = [href for href in re.findall(r'href="([^"]+)"', html)
-               if f"habana_media_loader-{args.media_version}-" in href]
-    if len(matches) != 1:
-        raise ValueError(f"Expected one media wheel for {args.media_version}, found {len(matches)}")
-    url, fragment = urllib.parse.urldefrag(urllib.parse.urljoin(index, matches[0]))
-    expected = urllib.parse.parse_qs(fragment)["sha256"][0]
-    wheel = work / "downloads" / Path(urllib.parse.urlsplit(url).path).name
-    wheel.parent.mkdir(exist_ok=True)
-    if not wheel.exists():
-        with urllib.request.urlopen(url, timeout=60) as response, wheel.open("wb") as out:
-            while chunk := response.read(1024 * 1024):
-                out.write(chunk)
+    if args.media_wheel is not None:
+        wheel = args.media_wheel.resolve(strict=True)
+        expected = args.media_wheel_sha256
+        if (expected is None or len(expected) != 64
+                or any(c not in "0123456789abcdef" for c in expected)
+                or not wheel.name.startswith(f"habana_media_loader-{args.media_version}-")):
+            raise ValueError("Offline media wheel requires its exact version and SHA256")
+        url = wheel.as_uri()
+    else:
+        if args.media_wheel_sha256 is not None:
+            raise ValueError("media-wheel-sha256 requires media-wheel")
+        index = "https://vault.habana.ai/artifactory/api/pypi/gaudi-python/simple/habana-media-loader/"
+        with urllib.request.urlopen(index, timeout=30) as response:
+            html = response.read().decode()
+        (work / "media-index.html").write_text(html)
+        matches = [href for href in re.findall(r'href="([^"]+)"', html)
+                   if f"habana_media_loader-{args.media_version}-" in href]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one media wheel for {args.media_version}, found {len(matches)}")
+        url, fragment = urllib.parse.urldefrag(urllib.parse.urljoin(index, matches[0]))
+        expected = urllib.parse.parse_qs(fragment)["sha256"][0]
+        wheel = work / "downloads" / Path(urllib.parse.urlsplit(url).path).name
+        wheel.parent.mkdir(exist_ok=True)
+        if not wheel.exists():
+            with urllib.request.urlopen(url, timeout=60) as response, wheel.open("wb") as out:
+                while chunk := response.read(1024 * 1024):
+                    out.write(chunk)
     if sha(wheel) != expected:
         raise ValueError("Media wheel checksum mismatch")
     run([str(python), "-m", "pip", "install", "--no-deps", str(wheel)], log)
@@ -91,9 +107,12 @@ def main():
 
     latest = work / "runtime-libs"
     latest.mkdir(exist_ok=True)
-    for file in Path("/usr/lib/habanalabs").glob("*.so*"):
+    sdk_root = args.sdk_root.resolve(strict=True)
+    sdk_include = (sdk_root / "usr/include/habanalabs").resolve(strict=True)
+    sdk_libraries = (sdk_root / "usr/lib/habanalabs").resolve(strict=True)
+    for file in sdk_libraries.glob("*.so*"):
         link(file, latest / file.name)
-    link(Path("/usr/include/habanalabs/hl_logger"), work / "sdk/hl_logger/include")
+    link(sdk_include / "hl_logger", work / "sdk/hl_logger/include")
     env = dict(os.environ)
     env.update({
         "VIRTUAL_ENV": str(venv),
@@ -108,7 +127,7 @@ def main():
         "PYTORCH_MODULES_DEBUG_BUILD": str(work / "build-debug"),
         "SWTOOLS_SDK_ROOT": str(work / "sdk"),
         "MEDIA_ROOT": str(media),
-        **{key: "/usr/include/habanalabs" for key in [
+        **{key: str(sdk_include) for key in [
             "HCL_INCLUDE_DIR", "SPECS_EXT_ROOT", "SPECS_EMBEDDED_ROOT",
             "SYNAPSE_INCLUDE_DIR", "SYNAPSE_UTILS_INCLUDE_DIR"]},
     })
@@ -136,6 +155,7 @@ def main():
             explicit[key] = env[key]
     metadata = dict(command=command, environment=explicit, tools=tools,
                     media=dict(url=url, sha256=expected), requirements_sha256=sha(source / "requirements.txt"),
+                    sdk_root=str(sdk_root),
                     retained_torch_site=str(torch_site))
     (work / "build-config.json").write_text(json.dumps(metadata, indent=2) + "\n")
     run([str(python), "-m", "pip", "freeze"], work / "packages.txt", env=env)
