@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <strings.h>
 #include <list>
 #include <memory>
