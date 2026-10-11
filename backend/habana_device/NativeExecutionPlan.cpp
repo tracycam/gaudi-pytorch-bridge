@@ -210,7 +210,7 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     try {
       device.register_producer_on_stream(
           std::vector<synapse_helpers::device_ptr>(frame->program->dependencies),
-          stream, [frame]() mutable {});
+          stream, [holder = frame]() mutable { holder.reset(); });
       frame->needs_publication = false;
     } catch (...) {
       // A partially submitted invocation must drain before its owners vanish.
