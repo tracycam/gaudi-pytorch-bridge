@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <exception>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -139,53 +140,83 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     return result;
   }
 
-  void replay(synapse_helpers::device& device, synapse_helpers::stream& stream) {
-    PT_BRIDGE_LAMBDA_BEGIN("PreparedRegionSubmit");
-    struct Frame {
-      std::shared_ptr<PreparedRegionProgram> program;
-      std::unique_ptr<synapse_helpers::device_ptr_lock> lock;
-      synapse_helpers::active_recipe_counter* counter = nullptr;
-      ~Frame() {
-        lock.reset();
-        program.reset();
-        if (counter) counter->decrease_and_notify();
-      }
-    };
-    device.add_wait_events_on_stream(dependencies, stream);
-    auto workspace = device.get_workspace_buffer(workspace_size);
+  // Physical bindings belong to an invocation, never to the compiled program.
+  // Retain one frame across repeated entries, and publish its completion only
+  // after the invocation's last submitted command. Stream dependency checks
+  // still run at each entry; reuse does not weaken external stream ordering.
+  struct Frame {
+    std::shared_ptr<const PreparedRegionProgram> program;
+    std::unique_ptr<synapse_helpers::device_ptr_lock> lock;
+    std::vector<std::vector<synLaunchTensorInfoExt>> bindings;
+    synapse_helpers::device_ptr workspace = 0;
+    synapse_helpers::active_recipe_counter* counter = nullptr;
+    bool needs_publication = false;
+    ~Frame() {
+      lock.reset();
+      program.reset();
+      if (counter) counter->decrease_and_notify();
+    }
+  };
+
+  std::shared_ptr<Frame> instantiate(
+      synapse_helpers::device& device, synapse_helpers::device_ptr workspace) {
     auto frame = std::make_shared<Frame>();
     frame->program = shared_from_this();
-    frame->lock = std::make_unique<synapse_helpers::device_ptr_lock>(device.get_device_memory().lock_addresses(*address_plan));
+    frame->workspace = workspace;
+    frame->lock = std::make_unique<synapse_helpers::device_ptr_lock>(
+        device.get_device_memory().lock_addresses(*address_plan));
+    frame->bindings.reserve(calls.size());
+    for (const auto& call : calls) {
+      frame->bindings.push_back(call.tensors);
+      auto& tensors = frame->bindings.back();
+      for (size_t n = 0; n < tensors.size(); ++n) {
+        tensors[n].pTensorAddress = frame->lock->at(call.slots[n]);
+      }
+    }
     device.get_active_recipe_counter().increase();
     frame->counter = &device.get_active_recipe_counter();
-    auto publish = [&] {
-      try {
-        device.register_producer_on_stream(std::vector<synapse_helpers::device_ptr>(dependencies), stream,
-            [frame]() mutable { frame.reset(); });
-      } catch (...) {
-        // A possibly submitted prefix must finish before its owners disappear.
-        try { stream.synchronize(); } catch (...) { std::terminate(); }
-        throw;
+    return frame;
+  }
+
+  void replay(
+      synapse_helpers::device& device, synapse_helpers::stream& stream,
+      Frame& frame) const {
+    PT_BRIDGE_LAMBDA_BEGIN("PreparedRegionSubmit");
+    device.add_wait_events_on_stream(dependencies, stream);
+    frame.needs_publication = true;
+    for (size_t i = 0; i < calls.size(); ++i) {
+      const auto& call = calls[i];
+      if (call.collective) {
+        call.collective->submit(
+            frame.lock->at(call.slots[0]), frame.lock->at(call.slots[1]), stream);
+      } else {
+        const auto& tensors = frame.bindings[i];
+        auto status = synLaunchWithExternalEventsExt(
+            stream, tensors.data(), tensors.size(),
+            call.owner->workspace_size_ ? frame.workspace : 0,
+            call.owner->recipe_->syn_recipe_handle_, nullptr, 0, 0);
+        HABANA_ASSERT(status == synSuccess, "Prepared recipe launch failed: ", status);
       }
-    };
+    }
+  }
+
+  static void publish(
+      synapse_helpers::device& device, synapse_helpers::stream& stream,
+      const std::shared_ptr<Frame>& frame) {
+    if (!frame->needs_publication) return;
     try {
-      for (auto& call : calls) {
-        if (call.collective) {
-          call.collective->submit(frame->lock->at(call.slots[0]), frame->lock->at(call.slots[1]), stream);
-        } else {
-          for (size_t n=0; n<call.tensors.size(); ++n)
-            call.tensors[n].pTensorAddress = frame->lock->at(call.slots[n]);
-          auto status = synLaunchWithExternalEventsExt(stream, call.tensors.data(), call.tensors.size(),
-              call.owner->workspace_size_ ? workspace : 0, call.owner->recipe_->syn_recipe_handle_, nullptr, 0, 0);
-          HABANA_ASSERT(status == synSuccess, "Prepared recipe launch failed: ", status);
-        }
-      }
+      device.register_producer_on_stream(
+          std::vector<synapse_helpers::device_ptr>(frame->program->dependencies),
+          stream, [frame]() mutable {});
+      frame->needs_publication = false;
     } catch (...) {
-      publish();
+      // A partially submitted invocation must drain before its owners vanish.
+      try { stream.synchronize(); } catch (...) { std::terminate(); }
+      frame->needs_publication = false;
       throw;
     }
-    publish();
   }
+
 };
 
 bool static_recipe(
@@ -232,6 +263,12 @@ struct NativeExecutionPlan::Impl {
   std::unordered_multimap<const c10::StorageImpl*, size_t> leases_by_storage;
   std::vector<size_t> boundary_leases;
   NativeReplayStats stats;
+  NativePlanState state = NativePlanState::Capturing;
+  std::string rejection;
+  struct Policy {
+    bool compiled_regions = true;
+    bool event_batching = false;
+  } policy;
   NativeDependencyPlan dependencies;
   struct StreamRegion {
     size_t first;
@@ -304,16 +341,17 @@ struct NativeExecutionPlan::Impl {
 NativeExecutionPlan::NativeExecutionPlan() : impl_(std::make_unique<Impl>()) {
   // Prepared adapters run only in proven serial regions. Unsupported regions
   // retain their ordinary launchers; diagnostic switches can still disable it.
-  impl_->stats.compiled_regions = true;
+  impl_->policy.compiled_regions = true;
 }
 NativeExecutionPlan::~NativeExecutionPlan() = default;
 
 void NativeExecutionPlan::reject(std::string reason) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  if (impl_->stats.reason.empty()) {
-    impl_->stats.reason = std::move(reason);
+  if (impl_->state == NativePlanState::Failed) return;
+  if (impl_->rejection.empty()) {
+    impl_->rejection = std::move(reason);
   }
-  impl_->stats.ready = false;
+  impl_->state = NativePlanState::Rejected;
   // A rejected plan must not pin an unused copy of the graph's activation
   // storage. In-flight launches retain their own bridge resource holders.
   impl_->commands.clear();
@@ -344,7 +382,7 @@ void NativeExecutionPlan::append(
     const std::vector<size_t>& external_events,
     const VecOfIValPtrSh& dma_inputs) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  if (!impl_->stats.reason.empty()) {
+  if (impl_->state != NativePlanState::Capturing) {
     return;
   }
   if (!launcher.collective_kernels_info_ || !dma_inputs.empty()) {
@@ -519,7 +557,7 @@ bool NativeExecutionPlan::matches_captured_inputs(
 
 void NativeExecutionPlan::seal(size_t subgraphs) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  if (impl_->stats.reason.empty() && !impl_->commands.empty() &&
+  if (impl_->state == NativePlanState::Capturing && !impl_->commands.empty() &&
       impl_->commands.size() == subgraphs) {
     std::vector<NativeCommandAccess> accesses;
     accesses.reserve(impl_->commands.size());
@@ -578,15 +616,20 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
         impl_->stats.coalesced_collectives += region.collectives.size();
       }
     }
-    impl_->stats.ready = true;
-  } else if (impl_->stats.reason.empty()) {
+    // Input snapshots only establish capture-time admission. Runtime guards
+    // use the canonical retained leases, so release duplicate snapshot owners.
+    for (auto& command : impl_->commands) {
+      std::vector<RetainedTensorBinding>().swap(command.captured_inputs);
+    }
+    impl_->state = NativePlanState::Ready;
+  } else if (impl_->state == NativePlanState::Capturing) {
     reject("capture does not provide one compiled recipe per subgraph");
   }
 }
 
 bool NativeExecutionPlan::capture_boundary(const at::Tensor& tensor) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  if (!impl_->stats.reason.empty() || !tensor.defined() ||
+  if (impl_->state != NativePlanState::Capturing || !tensor.defined() ||
       !tensor.has_storage()) {
     return false;
   }
@@ -620,9 +663,9 @@ bool NativeExecutionPlan::matches_boundaries(
 bool NativeExecutionPlan::replay(size_t repetitions) {
   PT_BRIDGE_LAMBDA_BEGIN("NativePlanReplay");
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  TORCH_CHECK(!impl_->stats.failed, "Native HPUGraph plan failed after submission");
-  TORCH_CHECK(repetitions >= 1 && repetitions <= 16, "Replay repetitions must be 1..16");
-  if (!impl_->stats.ready) {
+  TORCH_CHECK(impl_->state != NativePlanState::Failed, "Native HPUGraph plan failed after submission");
+  TORCH_CHECK(repetitions >= 1, "Replay repetitions must be positive");
+  if (impl_->state != NativePlanState::Ready) {
     return false;
   }
   {
@@ -635,17 +678,17 @@ bool NativeExecutionPlan::replay(size_t repetitions) {
     }
   }
   try {
-    auto submit_one = [&]() {
+    auto& device = habana::HPUDeviceContext::get_device();
+    auto& compute = device.get_stream(impl_->commands.front().stream);
+    const char* sync_launch = std::getenv("PT_HPU_SYNC_LAUNCH");
+    const bool prepared_allowed = impl_->policy.compiled_regions &&
+        !GET_ENV_FLAG_NEW(PT_COMPILE_ONLY_MODE) &&
+        !synapse_helpers::memory_reporter_enable() &&
+        (!sync_launch || std::atoi(sync_launch) == 0);
+    auto submit_one = [&](auto& frames, synapse_helpers::device_ptr workspace) {
       PT_BRIDGE_LAMBDA_BEGIN("NativePlanSubmit");
       std::shared_ptr<habana::HcclCommunicator> communicator;
       size_t region_index = 0;
-      auto& device = habana::HPUDeviceContext::get_device();
-      auto& compute = device.get_stream(impl_->commands.front().stream);
-      const char* sync_launch = std::getenv("PT_HPU_SYNC_LAUNCH");
-      const bool prepared_allowed = impl_->stats.compiled_regions &&
-          !GET_ENV_FLAG_NEW(PT_COMPILE_ONLY_MODE) &&
-          !synapse_helpers::memory_reporter_enable() &&
-          (!sync_launch || std::atoi(sync_launch) == 0);
       synapse_helpers::stream* communication = nullptr;
       std::unique_ptr<synapse_helpers::ReplayEventBatch> event_batch;
       bool entered = false;
@@ -677,7 +720,12 @@ bool NativeExecutionPlan::replay(size_t repetitions) {
                                              [communicator]() {});
             entered = true;
             if (prepared_allowed && impl_->regions[region_index].program) {
-              impl_->regions[region_index].program->replay(device, compute);
+              auto& frame = frames[region_index];
+              if (!frame) {
+                frame = impl_->regions[region_index].program->instantiate(device, workspace);
+                ++impl_->stats.prepared_frames;
+              }
+              impl_->regions[region_index].program->replay(device, compute, *frame);
               ++impl_->stats.prepared_region_replays;
               impl_->stats.prepared_replayed_commands += impl_->regions[region_index].program->calls.size();
               index = impl_->regions[region_index].last;
@@ -685,12 +733,21 @@ bool NativeExecutionPlan::replay(size_t repetitions) {
               ++region_index;
               continue;
             }
-            if (impl_->stats.event_batching) {
+            if (impl_->policy.event_batching) {
               // Reserve the region's largest workspace before extending any
               // per-command lifetime to the region boundary.
               device.get_workspace_buffer(impl_->regions[region_index].workspace_size);
               event_batch = std::make_unique<synapse_helpers::ReplayEventBatch>(
                   device, compute, *impl_->regions[region_index].footprint);
+            }
+          }
+          // An ordinary launcher may dispatch a collective on another stream.
+          // Publish preceding writes before handing control to that adapter;
+          // only a fully prepared interval can defer publication safely.
+          for (const auto& frame : frames) {
+            if (frame && frame->needs_publication) {
+              PreparedRegionProgram::publish(device, compute, frame);
+              ++impl_->stats.prepared_publications;
             }
           }
           if (entered && command.access.collectives) {
@@ -720,9 +777,42 @@ bool NativeExecutionPlan::replay(size_t repetitions) {
     // keeps this invocation's borrowed references alive through SDK submission;
     // device completion remains asynchronous and retains its storage leases.
     auto submit = [&]() {
-      for (size_t iteration = 0; iteration < repetitions; ++iteration) {
-        submit_one();
+      // Reserve the largest workspace before retaining any in-flight frame.
+      // Ordinary prefix/tail launches must not grow it between iterations.
+      size_t workspace_size = 0;
+      if (prepared_allowed) {
+        for (const auto& command : impl_->commands) {
+          workspace_size = std::max(workspace_size, size_t(command.launcher->workspace_size_));
+        }
       }
+      const auto workspace = prepared_allowed
+          ? device.get_workspace_buffer(workspace_size) : 0;
+      std::vector<std::shared_ptr<PreparedRegionProgram::Frame>> frames(impl_->regions.size());
+      auto publish_frames = [&] {
+        std::exception_ptr error;
+        for (const auto& frame : frames) {
+          if (!frame || !frame->needs_publication) continue;
+          try {
+            PreparedRegionProgram::publish(device, compute, frame);
+            ++impl_->stats.prepared_publications;
+          } catch (...) {
+            if (!error) error = std::current_exception();
+          }
+        }
+        if (error) std::rethrow_exception(error);
+      };
+      try {
+        for (size_t iteration = 0; iteration < repetitions; ++iteration) {
+          submit_one(frames, workspace);
+        }
+      } catch (...) {
+        const auto error = std::current_exception();
+        // Publish all submitted frames even if one registration fails. That
+        // path drains the stream before propagating an error, preserving leases.
+        try { publish_frames(); } catch (...) {}
+        std::rethrow_exception(error);
+      }
+      publish_frames();
     };
     if (impl_->stats.collectives) {
       // Queue the whole chain once. The shared HCCL queue preserves ordering
@@ -733,8 +823,8 @@ bool NativeExecutionPlan::replay(size_t repetitions) {
       submit();
     }
   } catch (...) {
-    impl_->stats.failed = true;
-    impl_->stats.ready = false;
+    impl_->state = NativePlanState::Failed;
+    impl_->rejection = "native submission failed; reset before replay";
     throw;
   }
   impl_->stats.replays += repetitions;
@@ -742,9 +832,19 @@ bool NativeExecutionPlan::replay(size_t repetitions) {
   return true;
 }
 
+NativePlanState NativeExecutionPlan::state() const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  return impl_->state;
+}
+
 NativeReplayStats NativeExecutionPlan::stats() const {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   auto result = impl_->stats;
+  result.ready = impl_->state == NativePlanState::Ready;
+  result.failed = impl_->state == NativePlanState::Failed;
+  result.reason = impl_->rejection;
+  result.compiled_regions = impl_->policy.compiled_regions;
+  result.event_batching = impl_->policy.event_batching;
   result.retained_bindings = impl_->leases.size();
   for (const auto& region : impl_->regions) if (region.program) {
     result.address_cache_hits += region.program->address_plan->hits;
@@ -755,16 +855,16 @@ NativeReplayStats NativeExecutionPlan::stats() const {
 
 void NativeExecutionPlan::set_event_batching(bool enabled) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  TORCH_CHECK(impl_->stats.ready && !impl_->stats.failed, "Native plan is not ready");
-  impl_->stats.event_batching = enabled;
-  if (enabled) impl_->stats.compiled_regions = false;
+  TORCH_CHECK(impl_->state == NativePlanState::Ready, "Native plan is not ready");
+  impl_->policy.event_batching = enabled;
+  if (enabled) impl_->policy.compiled_regions = false;
 }
 
 void NativeExecutionPlan::set_compiled_regions(bool enabled) {
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
-  TORCH_CHECK(impl_->stats.ready && !impl_->stats.failed, "Native plan is not ready");
-  impl_->stats.compiled_regions = enabled;
-  if (enabled) impl_->stats.event_batching = false;
+  TORCH_CHECK(impl_->state == NativePlanState::Ready, "Native plan is not ready");
+  impl_->policy.compiled_regions = enabled;
+  if (enabled) impl_->policy.event_batching = false;
 }
 
 std::vector<NativeAccessDiagnostic>

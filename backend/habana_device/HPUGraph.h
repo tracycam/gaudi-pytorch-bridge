@@ -174,6 +174,9 @@ struct HPUGraph {
   std::vector<NativeBoundary> native_boundaries_;
   std::vector<const at::Tensor*> native_boundary_values_;
   size_t native_boundary_references_ = 0;
+  size_t adapter_replays_ = 0;
+  bool last_replay_native_ = false;
+  std::string last_replay_reason_;
 };
 
 } // namespace at::hpu

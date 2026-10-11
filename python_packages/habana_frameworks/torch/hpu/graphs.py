@@ -75,7 +75,7 @@ class HPUGraph:
         _hpu_C.replay(self.hpu_graph, [], asynchronous)
 
     def replay_many(self, repetitions: int):
-        """Submit 1..16 executions of one fixed-address captured program.
+        """Submit repeated executions of one fixed-address captured program.
 
         The program must update its persistent device state for the next
         iteration and store any required output history itself. This method
@@ -86,8 +86,8 @@ class HPUGraph:
         Unsupported bindings raise before native submission; use ordinary
         replay for graphs that require the Lazy rebinding adapter.
         """
-        if type(repetitions) is not int or not 1 <= repetitions <= 16:
-            raise ValueError("Replay repetitions must be an integer in 1..16")
+        if type(repetitions) is not int or repetitions < 1:
+            raise ValueError("Replay repetitions must be a positive integer")
         _hpu_C.replay_many(self.hpu_graph, repetitions)
 
     def execution_info(self):

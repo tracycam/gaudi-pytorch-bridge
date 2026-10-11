@@ -51,14 +51,14 @@ def test_repeated_mutation(dtype, store, steps, asynchronous):
             graph.reset()
 
 
-@pytest.mark.parametrize("repetitions", [1, 4, 16])
+@pytest.mark.parametrize("repetitions", [1, 4, 16, 32])
 @pytest.mark.parametrize("eos", [-1, 129])
 def test_replay_many_persistent_feedback(repetitions, eos):
     with torch.inference_mode():
         position = torch.tensor([126], dtype=torch.int64, device="hpu")
         iteration = torch.tensor([0], dtype=torch.int64, device="hpu")
         active = torch.tensor([True], device="hpu")
-        history = torch.full((64,), -1, dtype=torch.int64, device="hpu")
+        history = torch.full((128,), -1, dtype=torch.int64, device="hpu")
         ht.core.mark_step()
         ht.hpu.synchronize()
         graph = ht.hpu.HPUGraph()
@@ -75,7 +75,7 @@ def test_replay_many_persistent_feedback(repetitions, eos):
             ht.hpu.synchronize()
             for value, source in ((position, [126]), (iteration, [0]), (active, [True])):
                 value.copy_(torch.tensor(source, dtype=value.dtype, device="hpu"))
-            history.copy_(torch.full((64,), -1, dtype=torch.int64, device="hpu"))
+            history.copy_(torch.full((128,), -1, dtype=torch.int64, device="hpu"))
             ht.core.mark_step()
             ht.hpu.synchronize()
             for block in range(1, 4):
@@ -85,7 +85,7 @@ def test_replay_many_persistent_feedback(repetitions, eos):
                 valid = min(steps, 3) if eos == 129 else steps
                 assert position.cpu().item() == 126 + valid
                 assert iteration.cpu().item() == steps
-                expected = list(range(127, 127 + valid)) + [-1] * (64 - valid)
+                expected = list(range(127, 127 + valid)) + [-1] * (128 - valid)
                 assert history.cpu().tolist() == expected
                 stats = graph.execution_info()
                 assert stats["ready"] and not stats["failed"], stats
@@ -119,11 +119,49 @@ def test_replay_many_rejects_rebinding_before_submission():
             graph.reset()
 
 
-@pytest.mark.parametrize("repetitions", [0, -1, 17, True, 1.5])
+@pytest.mark.parametrize("repetitions", [0, -1, True, 1.5])
 def test_replay_many_invalid_count(repetitions):
     graph = ht.hpu.HPUGraph()
     try:
-        with pytest.raises(ValueError, match="integer in 1..16"):
+        with pytest.raises(ValueError, match="positive integer"):
             graph.replay_many(repetitions)
     finally:
         graph.reset()
+
+
+def test_async_adapter_does_not_retire_static_plan():
+    """A temporary adapter choice must not destroy an otherwise valid plan.
+
+    If the adapter actually changes storage, the next native attempt must
+    reject it safely. This test uses a static read-only input to isolate the
+    temporary scheduling choice from real rebinding.
+    """
+    with torch.inference_mode():
+        state = torch.tensor([126], dtype=torch.int64, device="hpu")
+        ht.core.mark_step()
+        ht.hpu.synchronize()
+        graph = ht.hpu.HPUGraph()
+        try:
+            graph.capture_begin()
+            output = state + 1
+            ht.core.mark_step()
+            graph.capture_end()
+            ht.hpu.synchronize()
+            assert graph.execution_info()["ready"]
+            graph.replay(asynchronous=True)
+            ht.hpu.synchronize()
+            assert output.cpu().item() == 127
+            info = graph.execution_info()
+            assert info["ready"] and not info["failed"], info
+            assert info["adapter_replays"] == 1 and info["replays"] == 0, info
+            assert not info["last_replay_native"], info
+            state.copy_(torch.tensor([128], dtype=state.dtype, device="hpu"))
+            ht.core.mark_step()
+            graph.replay()
+            ht.hpu.synchronize()
+            assert output.cpu().item() == 129
+            info = graph.execution_info()
+            assert info["ready"] and info["replays"] == 1, info
+            assert info["last_replay_native"] and not info["last_replay_reason"], info
+        finally:
+            graph.reset()

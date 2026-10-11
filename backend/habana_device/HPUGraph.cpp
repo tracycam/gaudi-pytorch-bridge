@@ -88,6 +88,9 @@ void HPUGraph::capture_begin(bool dry_run) {
   native_boundaries_.clear();
   native_boundary_values_.clear();
   native_boundary_references_ = 0;
+  adapter_replays_ = 0;
+  last_replay_native_ = false;
+  last_replay_reason_.clear();
   native_plan_ = std::make_unique<NativeExecutionPlan>();
   if (dry_run) {
     native_plan_->reject("dry-run requires deferred plan materialization");
@@ -220,6 +223,9 @@ void HPUGraph::destroy() {
   native_boundaries_.clear();
   native_boundary_values_.clear();
   native_boundary_references_ = 0;
+  adapter_replays_ = 0;
+  last_replay_native_ = false;
+  last_replay_reason_.clear();
 
   habana_lazy::HbExecutionContext* context =
       habana_lazy::get_device_lazy_execution_context();
@@ -298,7 +304,7 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
 }
 
 void HPUGraph::replay_many(size_t repetitions) {
-  TORCH_CHECK(repetitions >= 1 && repetitions <= 16, "Replay repetitions must be 1..16");
+  TORCH_CHECK(repetitions >= 1, "Replay repetitions must be positive");
   std::vector<at::Tensor> inputs;
   replay_impl(inputs, false, repetitions, true);
 }
@@ -309,7 +315,7 @@ void HPUGraph::replay_impl(
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   TORCH_CHECK(
-      !native_plan_ || !native_plan_->stats().failed,
+      !native_plan_ || native_plan_->state() != NativePlanState::Failed,
       "Native HPUGraph plan failed after submission; reset before replay");
   if (capturing_) {
     // if capturing is in progress, replay is not allowed.
@@ -324,10 +330,9 @@ void HPUGraph::replay_impl(
   } else {
     habana_lazy::HbLazyTensor::StepMarker({});
   }
-  if (native_plan_ && (async || !inputs.empty())) {
-    native_plan_->reject("asynchronous or rebound replay requires adapter");
-  }
-  if (native_plan_ && native_plan_->stats().ready) {
+  const bool requires_adapter = async || !inputs.empty();
+  if (!requires_adapter && native_plan_ &&
+      native_plan_->state() == NativePlanState::Ready) {
     bool bound = true;
     for (size_t slot=0; slot<native_boundaries_.size(); ++slot) {
       const auto& boundary = native_boundaries_[slot];
@@ -342,6 +347,8 @@ void HPUGraph::replay_impl(
     if (bound) {
       c10::StreamGuard stream_guard(capture_stream_.unwrap());
       if (native_plan_->replay(repetitions)) {
+        last_replay_native_ = true;
+        last_replay_reason_.clear();
         return;
       }
     } else {
@@ -351,6 +358,11 @@ void HPUGraph::replay_impl(
   TORCH_CHECK(
       !require_native, "Repeated replay requires a valid fixed-address native plan: ",
       native_plan_ ? native_plan_->stats().reason : "graph has no captured plan");
+  ++adapter_replays_;
+  last_replay_native_ = false;
+  last_replay_reason_ = requires_adapter
+      ? "asynchronous or rebound replay requires adapter"
+      : (native_plan_ ? native_plan_->stats().reason : "graph has no captured plan");
   for (size_t i = 0; i < captured_graphs.size(); i++) {
     captured_graphs[i]->replay(inputs, async);
   }
@@ -363,11 +375,11 @@ void HPUGraph::replayV2(
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   TORCH_CHECK(
-      !native_plan_ || !native_plan_->stats().failed,
+      !native_plan_ || native_plan_->state() != NativePlanState::Failed,
       "Native HPUGraph plan failed after submission; reset before replay");
-  if (native_plan_) {
-    native_plan_->reject("replayV2 requires input rebinding adapter");
-  }
+  ++adapter_replays_;
+  last_replay_native_ = false;
+  last_replay_reason_ = "replayV2 requires input rebinding adapter";
   if (capturing_) {
     // if capturing is in progress, replay is not allowed.
     PT_DEVICE_FATAL("GRAPH:: Capture in progress");
@@ -550,11 +562,11 @@ void HPUGraph::replayV3(std::vector<at::Tensor>& inputs, bool async) {
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   TORCH_CHECK(
-      !native_plan_ || !native_plan_->stats().failed,
+      !native_plan_ || native_plan_->state() != NativePlanState::Failed,
       "Native HPUGraph plan failed after submission; reset before replay");
-  if (native_plan_) {
-    native_plan_->reject("replayV3 requires input rebinding adapter");
-  }
+  ++adapter_replays_;
+  last_replay_native_ = false;
+  last_replay_reason_ = "replayV3 requires input rebinding adapter";
   PT_HPUGRAPH_DEBUG(
       "replayV3 with inputs size = ", inputs.size(), " aysnc = ", async);
   if (capturing_) {
@@ -619,6 +631,9 @@ NativeExecutionPlan* HPUGraph::native_capture_plan() {
 NativeReplayStats HPUGraph::native_replay_stats() const {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   auto result = native_plan_ ? native_plan_->stats() : NativeReplayStats{};
+  result.adapter_replays = adapter_replays_;
+  result.last_replay_native = last_replay_native_;
+  result.last_replay_reason = last_replay_reason_;
   result.boundary_references = native_boundary_references_;
   result.unique_boundaries = native_boundaries_.size();
   return result;

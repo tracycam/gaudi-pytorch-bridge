@@ -8,6 +8,8 @@
 
 namespace at::hpu {
 
+enum class NativePlanState { Capturing, Ready, Rejected, Failed };
+
 struct NativeReplayStats {
   size_t commands = 0;
   size_t replays = 0;
@@ -29,6 +31,8 @@ struct NativeReplayStats {
   bool compiled_regions = false;
   size_t prepared_regions = 0;
   size_t prepared_region_replays = 0;
+  size_t prepared_frames = 0;
+  size_t prepared_publications = 0;
   size_t prepared_commands = 0;
   size_t prepared_compute = 0;
   size_t prepared_collectives = 0;
@@ -36,6 +40,9 @@ struct NativeReplayStats {
   std::vector<std::string> prepared_rejections;
   size_t address_cache_hits = 0, address_cache_misses = 0;
   size_t boundary_references = 0, unique_boundaries = 0, retained_bindings = 0;
+  size_t adapter_replays = 0;
+  bool last_replay_native = false;
+  std::string last_replay_reason;
   bool ready = false;
   bool failed = false;
   std::string reason;
@@ -83,6 +90,7 @@ class NativeExecutionPlan {
   bool replay(size_t repetitions = 1);
   void set_event_batching(bool enabled);
   void set_compiled_regions(bool enabled);
+  NativePlanState state() const;
   NativeReplayStats stats() const;
   std::vector<NativeAccessDiagnostic> dependency_diagnostics() const;
 
