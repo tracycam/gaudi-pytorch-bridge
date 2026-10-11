@@ -73,10 +73,14 @@ class NativeExecutionPlan {
   // The graph adapter supplies unique live boundary slots; storage and layout
   // guards remain independent of that adapter's Lazy Tensor representation.
   bool capture_boundary(const at::Tensor& tensor);
+  // Validate recipe inputs against the adapter's live inputs before sealing.
+  // Capture itself may replace a logical in-place input's physical storage.
+  bool matches_captured_inputs(
+      size_t command, at::ArrayRef<const at::Tensor*> tensors) const;
   bool matches_boundaries(at::ArrayRef<const at::Tensor*> tensors) const;
   // false means rejection before submission; submission failures throw and
   // poison the plan, so a partially submitted chain can never run twice.
-  bool replay();
+  bool replay(size_t repetitions = 1);
   void set_event_batching(bool enabled);
   void set_compiled_regions(bool enabled);
   NativeReplayStats stats() const;

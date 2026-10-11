@@ -129,6 +129,7 @@ struct HPUGraph {
   void capture_begin(bool dry_run = false);
   void capture_end();
   void replay(std::vector<at::Tensor>& inputs, bool async = false);
+  void replay_many(size_t repetitions);
   void mark_step();
   void clear_inputs();
   void replayV2(
@@ -152,6 +153,9 @@ struct HPUGraph {
   }
 
  protected:
+  void replay_impl(
+      std::vector<at::Tensor>& inputs, bool async,
+      size_t repetitions, bool require_native);
   // Stream on which capture began
   c10::hpu::HPUStream capture_stream_;
   mutable std::recursive_mutex mutex_;

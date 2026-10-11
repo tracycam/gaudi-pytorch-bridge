@@ -35,6 +35,7 @@ struct RecipeCommand {
   std::shared_ptr<habana::RecipeLauncher> launcher;
   synapse_helpers::hpuStream_t stream;
   std::vector<habana_torch::jit::IValue> inputs;
+  std::vector<RetainedTensorBinding> captured_inputs;
   std::shared_ptr<VecOfIValPtrSh> intermediates;
   VecOfIValPtrSh outputs;
   VecOfIValPtrSh dma_inputs;
@@ -407,6 +408,11 @@ void NativeExecutionPlan::append(
   impl_->stats.collectives += command.launcher->collective_kernels_info_->Count();
   command.stream = stream;
   command.inputs.assign(inputs.begin(), inputs.end());
+  for (const auto& input : inputs) {
+    if (input.isTensor()) {
+      command.captured_inputs.emplace_back(input.toTensor());
+    }
+  }
   command.intermediates = std::make_shared<VecOfIValPtrSh>(
       intermediates ? snapshot(*intermediates) : VecOfIValPtrSh{});
   command.outputs = snapshot(outputs);
@@ -491,6 +497,24 @@ void NativeExecutionPlan::append(
   command.launcher->prepared_bindings_->launch->initialize(command.live_bindings);
   impl_->commands.push_back(std::move(command));
   impl_->stats.commands = impl_->commands.size();
+}
+
+bool NativeExecutionPlan::matches_captured_inputs(
+    size_t command, at::ArrayRef<const at::Tensor*> tensors) const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  if (command >= impl_->commands.size()) {
+    return false;
+  }
+  const auto& inputs = impl_->commands[command].captured_inputs;
+  if (inputs.size() != tensors.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (!tensors[i] || !inputs[i].matches(*tensors[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void NativeExecutionPlan::seal(size_t subgraphs) {
@@ -593,10 +617,11 @@ bool NativeExecutionPlan::matches_boundaries(
   return true;
 }
 
-bool NativeExecutionPlan::replay() {
+bool NativeExecutionPlan::replay(size_t repetitions) {
   PT_BRIDGE_LAMBDA_BEGIN("NativePlanReplay");
   std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
   TORCH_CHECK(!impl_->stats.failed, "Native HPUGraph plan failed after submission");
+  TORCH_CHECK(repetitions >= 1 && repetitions <= 16, "Replay repetitions must be 1..16");
   if (!impl_->stats.ready) {
     return false;
   }
@@ -610,7 +635,7 @@ bool NativeExecutionPlan::replay() {
     }
   }
   try {
-    auto submit = [&]() {
+    auto submit_one = [&]() {
       PT_BRIDGE_LAMBDA_BEGIN("NativePlanSubmit");
       std::shared_ptr<habana::HcclCommunicator> communicator;
       size_t region_index = 0;
@@ -691,6 +716,14 @@ bool NativeExecutionPlan::replay() {
         throw;
       }
     };
+    // Reuse one captured program and one HCCL queue job. The existing wait
+    // keeps this invocation's borrowed references alive through SDK submission;
+    // device completion remains asynchronous and retains its storage leases.
+    auto submit = [&]() {
+      for (size_t iteration = 0; iteration < repetitions; ++iteration) {
+        submit_one();
+      }
+    };
     if (impl_->stats.collectives) {
       // Queue the whole chain once. The shared HCCL queue preserves ordering
       // against ordinary collectives; snapshots submit inline inside that job.
@@ -704,8 +737,8 @@ bool NativeExecutionPlan::replay() {
     impl_->stats.ready = false;
     throw;
   }
-  ++impl_->stats.replays;
-  impl_->stats.coalesced_replays += !impl_->regions.empty();
+  impl_->stats.replays += repetitions;
+  impl_->stats.coalesced_replays += impl_->regions.empty() ? 0 : repetitions;
   return true;
 }
 

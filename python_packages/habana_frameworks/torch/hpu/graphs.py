@@ -74,6 +74,22 @@ class HPUGraph:
         """
         _hpu_C.replay(self.hpu_graph, [], asynchronous)
 
+    def replay_many(self, repetitions: int):
+        """Submit 1..16 executions of one fixed-address captured program.
+
+        The program must update its persistent device state for the next
+        iteration and store any required output history itself. This method
+        does not wire output-to-input feedback, reserve KV, or stop on EOS.
+        It submits through the existing bridge/HCCL queue once, while the SDK
+        may block for command capacity. It is not a hardware loop and does not
+        promise CPU-free command submission. Device completion is asynchronous.
+        Unsupported bindings raise before native submission; use ordinary
+        replay for graphs that require the Lazy rebinding adapter.
+        """
+        if type(repetitions) is not int or not 1 <= repetitions <= 16:
+            raise ValueError("Replay repetitions must be an integer in 1..16")
+        _hpu_C.replay_many(self.hpu_graph, repetitions)
+
     def execution_info(self):
         """Return a snapshot of compiled execution coverage and rejection.
 

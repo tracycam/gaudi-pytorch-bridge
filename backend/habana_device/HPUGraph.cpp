@@ -149,6 +149,22 @@ void HPUGraph::capture_end() {
   // Clear the user marked inputs list
   context->ClearHPUGraphUserMarkedInputs();
   if (native_plan_) {
+    // End-of-capture boundary snapshots alone are insufficient: Lazy lowering
+    // can replace an in-place input's storage during capture (e.g. INT64 add_).
+    // A fixed-address recipe would then repeatedly read the obsolete input.
+    // Compare each recipe's capture-time inputs with the final Lazy bindings;
+    // the existing adapter owns rebinding when this static contract fails.
+    for (size_t i = 0; i < captured_graphs.size(); ++i) {
+      std::vector<const at::Tensor*> inputs;
+      for (const auto& input : captured_graphs[i]->hblazy_tensors_in_) {
+        const auto& data = input.getDataPtr();
+        inputs.push_back(data->tensor_data ? &*data->tensor_data : nullptr);
+      }
+      if (!native_plan_->matches_captured_inputs(i, inputs)) {
+        native_plan_->reject("captured recipe input requires Lazy rebinding");
+        break;
+      }
+    }
     for (const auto& graph : captured_graphs) {
       if (!graph->seed_tensors_generator_.empty() ||
           !graph->user_input_indices_.empty()) {
@@ -278,6 +294,18 @@ void HPUGraph::clear_inputs() {
 }
 
 void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
+  replay_impl(inputs, async, 1, false);
+}
+
+void HPUGraph::replay_many(size_t repetitions) {
+  TORCH_CHECK(repetitions >= 1 && repetitions <= 16, "Replay repetitions must be 1..16");
+  std::vector<at::Tensor> inputs;
+  replay_impl(inputs, false, repetitions, true);
+}
+
+void HPUGraph::replay_impl(
+    std::vector<at::Tensor>& inputs, bool async,
+    size_t repetitions, bool require_native) {
   PT_LAZY_TRACE;
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   TORCH_CHECK(
@@ -313,13 +341,16 @@ void HPUGraph::replay(std::vector<at::Tensor>& inputs, bool async) {
     if (bound) bound = native_plan_->matches_boundaries(native_boundary_values_);
     if (bound) {
       c10::StreamGuard stream_guard(capture_stream_.unwrap());
-      if (native_plan_->replay()) {
+      if (native_plan_->replay(repetitions)) {
         return;
       }
     } else {
       native_plan_->reject("Lazy tensor binding changed before replay");
     }
   }
+  TORCH_CHECK(
+      !require_native, "Repeated replay requires a valid fixed-address native plan: ",
+      native_plan_ ? native_plan_->stats().reason : "graph has no captured plan");
   for (size_t i = 0; i < captured_graphs.size(); i++) {
     captured_graphs[i]->replay(inputs, async);
   }

@@ -467,6 +467,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
          bool async = false) { graph.replay(inputs, async); },
       py::call_guard<py::gil_scoped_release>());
   m.def(
+      "replay_many",
+      [](at::hpu::HPUGraph& graph, size_t repetitions) {
+        graph.replay_many(repetitions);
+      },
+      py::call_guard<py::gil_scoped_release>());
+  m.def(
       "replayV2",
       [](at::hpu::HPUGraph& graph,
          std::vector<at::Tensor>& static_inputs,
