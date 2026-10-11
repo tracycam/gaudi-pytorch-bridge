@@ -14,6 +14,7 @@
  */
 
 #include "backend/habana_device/HPUDevice.h"
+#include "backend/habana_device/DeviceResource.h"
 #include <c10/util/thread_name.h>
 #include <synapse_api_types.h>
 #include <memory>
@@ -57,6 +58,7 @@ class HPUDeviceContextImpl {
 
   // Holding this is required for proper destruction order
   std::shared_ptr<ConstantInformation> constant_information_;
+  DeviceResourceRegistry resources_;
   bool exception_occurred_ = false;
   void Init();
   void JoinAllThreads();
@@ -162,6 +164,9 @@ void HPUDeviceContextImpl::ThreadsRelease() {
 }
 
 void HPUDeviceContextImpl::Finish() {
+  // Captured/cache programs may remain Python-visible until after device
+  // teardown. Release their SDK owners before recipe caches and GC queues.
+  resources_.release();
   synapse_helpers::MemoryStats stats;
   device_->get_device_memory().get_memory_stats(&stats);
 
@@ -205,6 +210,10 @@ void HPUDeviceContextImpl::Finish() {
   habana::PinnedMemoryAllocator::allocator_active_device_id =
       SYN_INVALID_DEVICE_ID;
   constant_information_.reset();
+}
+
+void register_device_resource(const std::shared_ptr<DeviceResource>& resource) {
+  HPUDeviceContextImpl::instance().resources_.keep(resource);
 }
 
 synapse_helpers::device& get_device(synDeviceId /*unused*/) {

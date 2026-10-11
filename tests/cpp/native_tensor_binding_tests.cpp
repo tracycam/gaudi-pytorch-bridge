@@ -7,6 +7,7 @@
 #include <set>
 #include "habana_kernels/hccl_kernels.h"
 #include "backend/habana_device/RetainedTensorBinding.h"
+#include "backend/habana_device/DeviceResource.h"
 #include "backend/habana_device/NativeDependencyPlan.h"
 #include "backend/kernel/hpu_habana_cache.h"
 #include "backend/synapse_helpers/event_addresses.h"
@@ -345,4 +346,52 @@ TEST(NativeDependencyPlanTest, OneCollectiveCannotAmortizeRegionGuards) {
   auto plan = NativeDependencyPlan::compile(commands);
   ASSERT_EQ(plan.serial_collectives.size(), 1);
   EXPECT_TRUE(plan.serial_regions(commands, {0,7,0}).empty());
+}
+
+namespace {
+class ShutdownResource : public habana::HPUDeviceContext::DeviceResource {
+ public:
+  explicit ShutdownResource(std::function<void()> release)
+      : release_(std::move(release)) {}
+  void release_for_device_shutdown() override { release_(); }
+ private:
+  std::function<void()> release_;
+};
+} // namespace
+
+TEST(DeviceResourceLifecycleTest, RegistrationDoesNotPinAnExpiredOwner) {
+  habana::HPUDeviceContext::DeviceResourceRegistry registry;
+  size_t calls = 0;
+  auto owner = std::make_shared<ShutdownResource>([&] { ++calls; });
+  std::weak_ptr<ShutdownResource> weak = owner;
+  registry.keep(owner);
+  owner.reset();
+  EXPECT_TRUE(weak.expired());
+  registry.release();
+  EXPECT_EQ(calls, 0);
+}
+
+TEST(DeviceResourceLifecycleTest, ReleaseIsOnceAndCallbacksRunOutsideTheLock) {
+  habana::HPUDeviceContext::DeviceResourceRegistry registry;
+  size_t calls = 0;
+  auto owner = std::make_shared<ShutdownResource>([&] {
+    ++calls;
+    // Reentrant registration must fail immediately, not deadlock shutdown.
+    EXPECT_THROW(registry.keep(std::make_shared<ShutdownResource>([] {})), std::logic_error);
+  });
+  registry.keep(owner);
+  registry.release();
+  registry.release();
+  EXPECT_EQ(calls, 1);
+}
+
+TEST(DeviceResourceLifecycleTest, OneFailureDoesNotSkipOtherResourceReleases) {
+  habana::HPUDeviceContext::DeviceResourceRegistry registry;
+  bool released = false;
+  auto bad = std::make_shared<ShutdownResource>([] { throw std::runtime_error("release failed"); });
+  auto good = std::make_shared<ShutdownResource>([&] { released = true; });
+  registry.keep(bad);
+  registry.keep(good);
+  EXPECT_THROW(registry.release(), std::runtime_error);
+  EXPECT_TRUE(released);
 }

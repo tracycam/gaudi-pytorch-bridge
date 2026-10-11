@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "NativeExecutionPlan.h"
+#include "DeviceResource.h"
 #include "RetainedTensorBinding.h"
 #include "NativeDependencyPlan.h"
 #include "backend/habana_device/HPUDevice.h"
@@ -145,8 +146,8 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
   }
 
   // Physical bindings belong to an invocation, never to the compiled program.
-  // Retain one frame across repeated entries, and publish its completion only
-  // after the invocation's last submitted command. Stream dependency checks
+  // Retain one frame across repeated entries, publishing before an ordinary
+  // adapter handoff and after the invocation's last submitted command. Stream dependency checks
   // still run at each entry; reuse does not weaken external stream ordering.
   struct Frame {
     std::shared_ptr<const PreparedRegionProgram> program;
@@ -259,7 +260,7 @@ bool static_recipe(
 
 } // namespace
 
-struct NativeExecutionPlan::Impl {
+struct NativeExecutionPlan::Impl : habana::HPUDeviceContext::DeviceResource {
   mutable std::recursive_mutex mutex;
   std::vector<RecipeCommand> commands;
   std::vector<RetainedTensorBinding> leases;
@@ -282,6 +283,36 @@ struct NativeExecutionPlan::Impl {
     std::shared_ptr<PreparedRegionProgram> program;
   };
   std::vector<StreamRegion> regions;
+
+  void clear_resources() {
+    // A rejected plan must not pin an unused copy of the graph's activation
+    // storage. In-flight launches retain their own bridge resource holders.
+    commands.clear();
+    leases.clear();
+    leases_by_storage.clear();
+    boundary_leases.clear();
+    dependencies = {};
+    regions.clear();
+    stats.commands = 0;
+    stats.collectives = 0;
+    stats.raw_edges = 0;
+    stats.war_edges = 0;
+    stats.waw_edges = 0;
+    stats.collective_order_edges = 0;
+    stats.serial_collectives = 0;
+    stats.external_events = 0;
+    stats.incomplete_access_commands = 0;
+    stats.coalesced_collectives = 0;
+  }
+
+  void release_for_device_shutdown() override {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+    if (state != NativePlanState::Failed) {
+      state = NativePlanState::Rejected;
+      rejection = "device shutdown released native plan resources";
+    }
+    clear_resources();
+  }
 
   uint64_t allocation_key(uint64_t address, bool& complete) const {
     if (!address) {
@@ -341,10 +372,11 @@ struct NativeExecutionPlan::Impl {
   }
 };
 
-NativeExecutionPlan::NativeExecutionPlan() : impl_(std::make_unique<Impl>()) {
+NativeExecutionPlan::NativeExecutionPlan() : impl_(std::make_shared<Impl>()) {
   // Prepared adapters run only in proven serial regions. Unsupported regions
   // retain their ordinary launchers; diagnostic switches can still disable it.
   impl_->policy.compiled_regions = true;
+  habana::HPUDeviceContext::register_device_resource(impl_);
 }
 NativeExecutionPlan::~NativeExecutionPlan() = default;
 
@@ -355,24 +387,7 @@ void NativeExecutionPlan::reject(std::string reason) {
     impl_->rejection = std::move(reason);
   }
   impl_->state = NativePlanState::Rejected;
-  // A rejected plan must not pin an unused copy of the graph's activation
-  // storage. In-flight launches retain their own bridge resource holders.
-  impl_->commands.clear();
-  impl_->leases.clear();
-  impl_->leases_by_storage.clear();
-  impl_->boundary_leases.clear();
-  impl_->dependencies = {};
-  impl_->regions.clear();
-  impl_->stats.commands = 0;
-  impl_->stats.collectives = 0;
-  impl_->stats.raw_edges = 0;
-  impl_->stats.war_edges = 0;
-  impl_->stats.waw_edges = 0;
-  impl_->stats.collective_order_edges = 0;
-  impl_->stats.serial_collectives = 0;
-  impl_->stats.external_events = 0;
-  impl_->stats.incomplete_access_commands = 0;
-  impl_->stats.coalesced_collectives = 0;
+  impl_->clear_resources();
 }
 
 void NativeExecutionPlan::append(
