@@ -129,39 +129,52 @@ def test_replay_many_invalid_count(repetitions):
         graph.reset()
 
 
-def test_async_adapter_does_not_retire_static_plan():
-    """A temporary adapter choice must not destroy an otherwise valid plan.
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64, torch.float32])
+@pytest.mark.parametrize("store", ["copy", "readonly"])
+def test_async_adapter_preserves_plan_until_binding_guard(dtype, store):
+    """A temporary adapter is not rejection; actual rebinding still is.
 
-    If the adapter actually changes storage, the next native attempt must
-    reject it safely. This test uses a static read-only input to isolate the
-    temporary scheduling choice from real rebinding.
+    In-place copy retains its physical output across the adapter. A separately
+    allocated read-only result is rebound by Lazy and must retire on the next
+    fixed-address attempt. Both paths must report actual execution coverage.
     """
     with torch.inference_mode():
-        state = torch.tensor([126], dtype=torch.int64, device="hpu")
+        state = torch.tensor([126], dtype=dtype, device="hpu")
         ht.core.mark_step()
         ht.hpu.synchronize()
         graph = ht.hpu.HPUGraph()
         try:
             graph.capture_begin()
-            output = state + 1
+            if store == "copy":
+                state.copy_(state + 1)
+                output = state
+            else:
+                output = state + 1
             ht.core.mark_step()
             graph.capture_end()
             ht.hpu.synchronize()
             assert graph.execution_info()["ready"]
             graph.replay(asynchronous=True)
             ht.hpu.synchronize()
-            assert output.cpu().item() == 127
+            assert output.cpu().item() == (128 if store == "copy" else 127)
             info = graph.execution_info()
             assert info["ready"] and not info["failed"], info
             assert info["adapter_replays"] == 1 and info["replays"] == 0, info
             assert not info["last_replay_native"], info
-            state.copy_(torch.tensor([128], dtype=state.dtype, device="hpu"))
-            ht.core.mark_step()
             graph.replay()
             ht.hpu.synchronize()
-            assert output.cpu().item() == 129
+            assert output.cpu().item() == (129 if store == "copy" else 127)
             info = graph.execution_info()
-            assert info["ready"] and info["replays"] == 1, info
-            assert info["last_replay_native"] and not info["last_replay_reason"], info
+            assert not info["failed"], info
+            if store == "copy":
+                assert info["ready"] and info["replays"] == 1, info
+                assert info["last_replay_native"] and not info["last_replay_reason"], info
+            else:
+                assert not info["ready"] and info["replays"] == 0, info
+                assert info["adapter_replays"] == 2 and not info["last_replay_native"], info
+                assert info["reason"] == "Lazy tensor binding changed before replay", info
+                with pytest.raises(RuntimeError, match="valid fixed-address native plan"):
+                    graph.replay_many(2)
+                assert output.cpu().item() == 127
         finally:
             graph.reset()
