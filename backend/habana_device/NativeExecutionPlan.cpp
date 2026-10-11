@@ -56,8 +56,10 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     std::vector<synLaunchTensorInfoExt> tensors;
     std::vector<std::string> names;
     std::vector<size_t> slots;
+    size_t binding_offset = 0;
   };
   std::vector<Call> calls;
+  size_t binding_count = 0;
   std::vector<at::Tensor> retained;
   std::vector<c10::Storage> storage_owners;
   std::vector<synapse_helpers::device_ptr> addresses, dependencies;
@@ -119,6 +121,8 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
       result->dependencies.insert(result->dependencies.end(), command.access.reads.begin(), command.access.reads.end());
       result->dependencies.insert(result->dependencies.end(), command.access.writes.begin(), command.access.writes.end());
       bindings.push_back(std::move(pointers));
+      call.binding_offset = result->binding_count;
+      result->binding_count += call.tensors.size();
       result->calls.push_back(std::move(call));
     }
     auto unique = [](auto& values) {
@@ -147,7 +151,7 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
   struct Frame {
     std::shared_ptr<const PreparedRegionProgram> program;
     std::unique_ptr<synapse_helpers::device_ptr_lock> lock;
-    std::vector<std::vector<synLaunchTensorInfoExt>> bindings;
+    std::vector<synLaunchTensorInfoExt> bindings;
     synapse_helpers::device_ptr workspace = 0;
     synapse_helpers::active_recipe_counter* counter = nullptr;
     bool needs_publication = false;
@@ -165,12 +169,11 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     frame->workspace = workspace;
     frame->lock = std::make_unique<synapse_helpers::device_ptr_lock>(
         device.get_device_memory().lock_addresses(*address_plan));
-    frame->bindings.reserve(calls.size());
+    frame->bindings.reserve(binding_count);
     for (const auto& call : calls) {
-      frame->bindings.push_back(call.tensors);
-      auto& tensors = frame->bindings.back();
-      for (size_t n = 0; n < tensors.size(); ++n) {
-        tensors[n].pTensorAddress = frame->lock->at(call.slots[n]);
+      frame->bindings.insert(frame->bindings.end(), call.tensors.begin(), call.tensors.end());
+      for (size_t n = 0; n < call.tensors.size(); ++n) {
+        frame->bindings[call.binding_offset + n].pTensorAddress = frame->lock->at(call.slots[n]);
       }
     }
     device.get_active_recipe_counter().increase();
@@ -184,15 +187,15 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     PT_BRIDGE_LAMBDA_BEGIN("PreparedRegionSubmit");
     device.add_wait_events_on_stream(dependencies, stream);
     frame.needs_publication = true;
-    for (size_t i = 0; i < calls.size(); ++i) {
-      const auto& call = calls[i];
+    for (const auto& call : calls) {
       if (call.collective) {
         call.collective->submit(
             frame.lock->at(call.slots[0]), frame.lock->at(call.slots[1]), stream);
       } else {
-        const auto& tensors = frame.bindings[i];
+        const auto* tensors = call.tensors.empty()
+            ? nullptr : frame.bindings.data() + call.binding_offset;
         auto status = synLaunchWithExternalEventsExt(
-            stream, tensors.data(), tensors.size(),
+            stream, tensors, call.tensors.size(),
             call.owner->workspace_size_ ? frame.workspace : 0,
             call.owner->recipe_->syn_recipe_handle_, nullptr, 0, 0);
         HABANA_ASSERT(status == synSuccess, "Prepared recipe launch failed: ", status);
