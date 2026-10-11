@@ -51,8 +51,10 @@ void LazyCast::AddNode(synapse_helpers::graph& graph, const at::Stack& stack) {
   auto dst_type_cast_type = habana_helpers::DataTypeToCastType(dst_type);
 
   if (src_type_cast_type == dst_type_cast_type) {
+    // A physical identity can still change the logical dtype (Long -> Int).
+    // Downstream metadata callbacks must observe the requested destination.
     auto out =
-        BuildOp(graph, "identity", {syn_in(0)}, {{sizes, ScalarType(), 0}});
+        BuildOp(graph, "identity", {syn_in(0)}, {{sizes, dst_type, 0}});
     syn_out(0) = std::move(out.at(0));
   } else {
     auto out = BuildCast(this, graph, syn_in(0), sizes, src_type, dst_type, 0);
