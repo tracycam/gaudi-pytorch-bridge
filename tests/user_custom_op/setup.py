@@ -25,8 +25,8 @@ habana_modules_directory = "/usr/include/habanalabs"
 pybind_include_path = pybind11.get_include()
 
 modes = {
-    "eager": ("habana_pytorch2_plugin", ["hpu_custom_topk.cpp", "hpu_custom_add.cpp"]),
-    "lazy": ("habana_pytorch_plugin", ["hpu_custom_topk.cpp", "hpu_custom_add.cpp"]),
+    "eager": ("habana_pytorch2_plugin", ["hpu_custom_topk.cpp", "hpu_custom_add.cpp", "hpu_custom_checked_identity.cpp"]),
+    "lazy": ("habana_pytorch_plugin", ["hpu_custom_topk.cpp", "hpu_custom_add.cpp", "hpu_custom_checked_identity.cpp"]),
     "lazy_legacy": ("habana_pytorch_plugin", ["hpu_legacy_custom_topk.cpp"]),
 }
 
