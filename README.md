@@ -3,18 +3,16 @@
 Intel Gaudi PyTorch Bridge consists of several Python packages enabling Intel Gaudi
 functionality in PyTorch with minimal code changes.
 
-## Native execution integration in this fork
+## Native Execution Plan & Graph Runtime in This Fork
 
-This fork implements a bridge-owned native execution plan that reuses the
-existing PyTorch interfaces and retires the external experimental executors.
-The [source feasibility audit](docs/native_graph/FEASIBILITY.zh-CN.md) and
-[implementation plan](docs/native_graph/PLAN.zh-CN.md) record the integration
-points, architectural constraints, remaining gaps, and acceptance criteria.
-A static compute subset has passed device checks and paired replay measurements;
-see the [qualification review](docs/native_graph/REVIEW-20261004.zh-CN.md).
-Collective integration, full lifecycle coverage, and model performance qualification
-remain incomplete. Source/provenance evidence is reproducible with
-`scripts/audit_native_graph_sources.py`; private model assets remain local.
+This fork extends the Intel Gaudi PyTorch Bridge (`v1.24.1`) with a model-independent native graph execution runtime ([`NativeExecutionPlan`](backend/habana_device/NativeExecutionPlan.h) and [`NativeDependencyPlan`](backend/habana_device/NativeDependencyPlan.h)) behind standard PyTorch HPU Graph interfaces (`torch.hpu.HPUGraph`, `wrap_in_hpu_graph`, `ModuleCacher`, and `InputBufferCache`):
+
+- **Unified Compute + Collective Prepared Regions**: Statically analyzes `RAW`/`WAW`/`WAR` tensor dependencies across Synapse compute recipes and HCCL collective operations (`AllReduce`, `AllGather`, `ReduceScatter`). Contiguous pure-compute subgraphs and single-communicator collectives are compiled into [`PreparedRegionProgram`](backend/habana_device/NativeExecutionPlan.cpp) descriptors and dispatched on a unified stream without intermediate host-stream handoffs or redundant event publications.
+- **Cached Launch Bindings & Relocation-Safe Memory Leases**: Retains `c10::Storage` ownership for all graph-bound tensors, pre-computes workspace requirements at graph seal time, and reuses pre-patched `synLaunchTensorInfoExt` arrays in $O(1)$ when physical HBM addresses remain unchanged, while automatically re-patching if the HPU device memory allocator relocates blocks during defragmentation.
+- **Per-Invocation Lifetime Isolation & Bounded Multi-Step Replay (`replay_many`)**: Separates immutable compiled plan state from per-invocation [`Frame`](backend/habana_device/NativeExecutionPlan.cpp) resources and event completion callbacks, enabling safe asynchronous multi-step queueing and clean resource teardown prior to device destruction.
+- **C++ Graph Input Traversal & Staged Input Buffers**: Implements C++ pybind11 traversal (`graph_input_hash` and `graph_copy_inputs` in [`bindings.cpp`](python_packages/habana_frameworks/torch/hpu/csrc/bindings.cpp)) with identity short-circuiting across nested containers and Python dataclasses, paired with [`InputBufferCache`](python_packages/habana_frameworks/torch/hpu/input_buffers.py) for persistent device input staging.
+
+Design documents, safety contracts, and validation records are maintained under [`docs/native_graph/`](docs/native_graph/GENERAL-FRAMEWORK-20261005.zh-CN.md).
 
 ## Repository Build
 
