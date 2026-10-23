@@ -65,6 +65,8 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
   std::vector<c10::Storage> storage_owners;
   std::vector<synapse_helpers::device_ptr> addresses, dependencies;
   std::unique_ptr<synapse_helpers::device_memory::prepared_addresses> address_plan;
+  std::shared_ptr<const std::vector<synapse_helpers::device_ptr>> cached_physical;
+  std::shared_ptr<const std::vector<synLaunchTensorInfoExt>> cached_bindings;
   size_t workspace_size = 0;
 
   static std::shared_ptr<PreparedRegionProgram> compile(
@@ -152,12 +154,13 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
   struct Frame {
     std::shared_ptr<const PreparedRegionProgram> program;
     std::unique_ptr<synapse_helpers::device_ptr_lock> lock;
-    std::vector<synLaunchTensorInfoExt> bindings;
+    std::shared_ptr<const std::vector<synLaunchTensorInfoExt>> bindings;
     synapse_helpers::device_ptr workspace = 0;
     synapse_helpers::active_recipe_counter* counter = nullptr;
     bool needs_publication = false;
     ~Frame() {
       lock.reset();
+      bindings.reset();
       program.reset();
       if (counter) counter->decrease_and_notify();
     }
@@ -170,13 +173,19 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
     frame->workspace = workspace;
     frame->lock = std::make_unique<synapse_helpers::device_ptr_lock>(
         device.get_device_memory().lock_addresses(*address_plan));
-    frame->bindings.reserve(binding_count);
-    for (const auto& call : calls) {
-      frame->bindings.insert(frame->bindings.end(), call.tensors.begin(), call.tensors.end());
-      for (size_t n = 0; n < call.tensors.size(); ++n) {
-        frame->bindings[call.binding_offset + n].pTensorAddress = frame->lock->at(call.slots[n]);
+    if (cached_physical != address_plan->physical || !cached_bindings) {
+      auto patched = std::make_shared<std::vector<synLaunchTensorInfoExt>>();
+      patched->reserve(binding_count);
+      for (const auto& call : calls) {
+        patched->insert(patched->end(), call.tensors.begin(), call.tensors.end());
+        for (size_t n = 0; n < call.tensors.size(); ++n) {
+          (*patched)[call.binding_offset + n].pTensorAddress = frame->lock->at(call.slots[n]);
+        }
       }
+      cached_physical = address_plan->physical;
+      cached_bindings = std::move(patched);
     }
+    frame->bindings = cached_bindings;
     device.get_active_recipe_counter().increase();
     frame->counter = &device.get_active_recipe_counter();
     return frame;
@@ -194,7 +203,7 @@ struct PreparedRegionProgram : std::enable_shared_from_this<PreparedRegionProgra
             frame.lock->at(call.slots[0]), frame.lock->at(call.slots[1]), stream);
       } else {
         const auto* tensors = call.tensors.empty()
-            ? nullptr : frame.bindings.data() + call.binding_offset;
+            ? nullptr : frame.bindings->data() + call.binding_offset;
         auto status = synLaunchWithExternalEventsExt(
             stream, tensors, call.tensors.size(),
             call.owner->workspace_size_ ? frame.workspace : 0,
@@ -283,6 +292,7 @@ struct NativeExecutionPlan::Impl : habana::HPUDeviceContext::DeviceResource {
     std::shared_ptr<PreparedRegionProgram> program;
   };
   std::vector<StreamRegion> regions;
+  size_t max_workspace_size = 0;
 
   void clear_resources() {
     // A rejected plan must not pin an unused copy of the graph's activation
@@ -293,6 +303,7 @@ struct NativeExecutionPlan::Impl : habana::HPUDeviceContext::DeviceResource {
     boundary_leases.clear();
     dependencies = {};
     regions.clear();
+    max_workspace_size = 0;
     stats.commands = 0;
     stats.collectives = 0;
     stats.raw_edges = 0;
@@ -583,6 +594,9 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
       accesses.push_back(command.access);
       impl_->stats.external_events += command.access.external_events;
       impl_->stats.incomplete_access_commands += !command.access.complete;
+      impl_->max_workspace_size = std::max(
+          impl_->max_workspace_size,
+          size_t(command.launcher->workspace_size_));
     }
     impl_->dependencies = NativeDependencyPlan::compile(accesses);
     for (const auto& edge : impl_->dependencies.edges) {
@@ -611,16 +625,21 @@ void NativeExecutionPlan::seal(size_t subgraphs) {
         std::string rejection;
         std::vector<synapse_helpers::device_ptr> addresses;
         size_t workspace = 0;
-        for (size_t i=region.collectives.front(); i<=region.collectives.back(); ++i) {
+        for (size_t i = region.first; i <= region.last; ++i) {
           addresses.insert(addresses.end(), accesses[i].reads.begin(), accesses[i].reads.end());
           addresses.insert(addresses.end(), accesses[i].writes.begin(), accesses[i].writes.end());
+          if (impl_->commands[i].launcher->prepared_bindings_) {
+            const auto& pb = *impl_->commands[i].launcher->prepared_bindings_;
+            addresses.insert(addresses.end(), pb.reads.begin(), pb.reads.end());
+            addresses.insert(addresses.end(), pb.producers.begin(), pb.producers.end());
+          }
           workspace = std::max(workspace, size_t(impl_->commands[i].launcher->workspace_size_));
         }
-        impl_->regions.push_back({region.collectives.front(), region.collectives.back(),
+        impl_->regions.push_back({region.first, region.last,
                                   communicators[region.collectives.front()],
                                   std::make_shared<synapse_helpers::ReplayEventBatch::Footprint>(std::move(addresses)),
                                   workspace, PreparedRegionProgram::compile(impl_->commands,
-                                      region.collectives.front(), region.collectives.back(), impl_->leases, rejection)});
+                                      region.first, region.last, impl_->leases, rejection)});
         impl_->stats.prepared_regions += bool(impl_->regions.back().program);
         if (impl_->regions.back().program) {
           for (const auto& call : impl_->regions.back().program->calls) {
@@ -797,14 +816,8 @@ bool NativeExecutionPlan::replay(size_t repetitions) {
     auto submit = [&]() {
       // Reserve the largest workspace before retaining any in-flight frame.
       // Ordinary prefix/tail launches must not grow it between iterations.
-      size_t workspace_size = 0;
-      if (prepared_allowed) {
-        for (const auto& command : impl_->commands) {
-          workspace_size = std::max(workspace_size, size_t(command.launcher->workspace_size_));
-        }
-      }
       const auto workspace = prepared_allowed
-          ? device.get_workspace_buffer(workspace_size) : 0;
+          ? device.get_workspace_buffer(impl_->max_workspace_size) : 0;
       std::vector<std::shared_ptr<PreparedRegionProgram::Frame>> frames(impl_->regions.size());
       auto publish_frames = [&] {
         std::exception_ptr error;

@@ -33,8 +33,10 @@ struct NativeDependencyEdge {
 };
 
 struct NativeSerialRegion {
-  uint64_t communicator;
+  uint64_t communicator = 0;
   std::vector<size_t> collectives;
+  size_t first = 0;
+  size_t last = 0;
 };
 
 struct NativeDependencyPlan {
@@ -80,6 +82,35 @@ struct NativeDependencyPlan {
       region.collectives.push_back(i);
     }
     finish();
+    auto raw = [&](size_t from, size_t to) {
+      return std::any_of(edges.begin(), edges.end(), [&](const auto& e) {
+        return e.producer == from && e.consumer == to &&
+            e.kind == NativeDependencyKind::Raw;
+      });
+    };
+    auto pure_compute = [&](size_t index) {
+      const auto& cmd = commands[index];
+      return cmd.complete && cmd.compute && !cmd.collectives &&
+          !cmd.external_events;
+    };
+    for (size_t r = 0; r < result.size(); ++r) {
+      const size_t min_first = r == 0 ? 0 : result[r - 1].last + 1;
+      const size_t max_last = r + 1 < result.size()
+          ? result[r + 1].collectives.front() - 1
+          : commands.size() - 1;
+      size_t first = result[r].collectives.front();
+      size_t last = result[r].collectives.back();
+      while (first > min_first && pure_compute(first - 1) &&
+             raw(first - 1, first)) {
+        --first;
+      }
+      while (last < max_last && pure_compute(last + 1) &&
+             raw(last, last + 1)) {
+        ++last;
+      }
+      result[r].first = first;
+      result[r].last = last;
+    }
     return result;
   }
 

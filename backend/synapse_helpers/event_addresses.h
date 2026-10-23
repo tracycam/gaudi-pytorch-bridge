@@ -10,15 +10,17 @@ namespace synapse_helpers {
 // The event manager supplies unique addresses and serializes all mutations.
 class EventAddresses {
  public:
-  explicit EventAddresses(std::vector<device_ptr> values) : values_(std::move(values)) {
-    if (values_.size() >= 64) {
-      positions_.reserve(values_.size());
-      for (size_t i=0; i<values_.size(); ++i) positions_.emplace(values_[i], i);
-    }
-  }
+  explicit EventAddresses(std::vector<device_ptr> values) : values_(std::move(values)) {}
   const std::vector<device_ptr>& values() const { return values_; }
   void remove(device_ptr value) {
-    if (positions_.empty()) {
+    if (!indexed_ && values_.size() >= 64) {
+      positions_.reserve(values_.size());
+      for (size_t i = 0; i < values_.size(); ++i) {
+        positions_.emplace(values_[i], i);
+      }
+      indexed_ = true;
+    }
+    if (!indexed_) {
       values_.erase(std::remove(values_.begin(), values_.end(), value), values_.end());
       return;
     }
@@ -36,5 +38,6 @@ class EventAddresses {
  private:
   std::vector<device_ptr> values_;
   absl::flat_hash_map<device_ptr, size_t> positions_;
+  bool indexed_ = false;
 };
 } // namespace synapse_helpers

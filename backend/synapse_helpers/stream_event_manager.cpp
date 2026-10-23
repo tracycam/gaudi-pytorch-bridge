@@ -99,10 +99,15 @@ void stream_event_manager::add_producer(
     stream& stream,
     event_done_callback done_cb) {
   // remove duplicate address
-  std::sort(device_addresses.begin(), device_addresses.end());
-  device_addresses.erase(
-      std::unique(device_addresses.begin(), device_addresses.end()),
-      device_addresses.end());
+  if (std::adjacent_find(
+          device_addresses.begin(),
+          device_addresses.end(),
+          std::greater_equal<device_ptr>{}) != device_addresses.end()) {
+    std::sort(device_addresses.begin(), device_addresses.end());
+    device_addresses.erase(
+        std::unique(device_addresses.begin(), device_addresses.end()),
+        device_addresses.end());
+  }
   shared_event eref;
   eref = std::make_shared<event>(
       stream.get_device().get_event_handle_cache(),
@@ -138,20 +143,22 @@ void stream_event_manager::add_producer(
         PT_SYNHELPER_DEBUG(
             "Event collision on address: 0x",
             reinterpret_cast<void*>(device_address));
-        shared_event event = found->second;
-        event->remove_device_ptr(device_address);
-        events_by_addr_.erase(found);
+        if (found->second != eref) {
+          found->second->remove_device_ptr(device_address);
+          found->second = eref;
+        }
+      } else {
+        events_by_addr_.emplace(device_address, eref);
       }
-      events_by_addr_.emplace(device_address, eref);
-    }
-    auto id_found = events_by_str_.find(event_id);
-    if (id_found != events_by_str_.end()) {
-      // we should have already found it by address and by now it would be gone
-      // since we called wait_until_done
-      PT_SYNHELPER_FATAL(
-          "events by address and by string are out of sync for ", event_id);
     }
     if (!event_id.empty()) {
+      auto id_found = events_by_str_.find(event_id);
+      if (id_found != events_by_str_.end()) {
+        // we should have already found it by address and by now it would be gone
+        // since we called wait_until_done
+        PT_SYNHELPER_FATAL(
+            "events by address and by string are out of sync for ", event_id);
+      }
       events_by_str_.emplace(event_id, eref);
     }
   }

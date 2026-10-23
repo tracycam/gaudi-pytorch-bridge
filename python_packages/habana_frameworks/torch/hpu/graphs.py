@@ -601,7 +601,7 @@ def copy_to(dst, src):
 
 
 def _copy_to(dst, src, skip_identity):
-    if skip_identity and dst is src and type(dst) in (dict, list, tuple):
+    if skip_identity and dst is src and (type(dst) in (dict, list, tuple) or is_dataclass(dst)):
         return
     if type(dst) is not type(src):
         raise AssertionError("Type mismatch")

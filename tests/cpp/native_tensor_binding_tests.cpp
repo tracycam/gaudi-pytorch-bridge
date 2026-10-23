@@ -325,17 +325,27 @@ TEST(NativeDependencyPlanTest, RegionsStopAtUnknownAndCommunicatorBoundaries) {
   auto regions = NativeDependencyPlan::compile(commands).serial_regions(commands, communicators);
   ASSERT_EQ(regions.size(), 1);
   EXPECT_EQ(regions[0].collectives, (std::vector<size_t>{1,3,5,7,9,11}));
+  EXPECT_EQ(regions[0].first, 0);
+  EXPECT_EQ(regions[0].last, 12);
   commands[6].complete = false;
   regions = NativeDependencyPlan::compile(commands).serial_regions(commands, communicators);
   ASSERT_EQ(regions.size(), 2);
   EXPECT_EQ(regions[0].collectives, (std::vector<size_t>{1,3}));
+  EXPECT_EQ(regions[0].first, 0);
+  EXPECT_EQ(regions[0].last, 4);
   EXPECT_EQ(regions[1].collectives, (std::vector<size_t>{9,11}));
+  EXPECT_EQ(regions[1].first, 8);
+  EXPECT_EQ(regions[1].last, 12);
   commands[6].complete = true;
   communicators[7] = 8;
   regions = NativeDependencyPlan::compile(commands).serial_regions(commands, communicators);
   ASSERT_EQ(regions.size(), 2);
   EXPECT_EQ(regions[0].collectives, (std::vector<size_t>{1,3,5}));
+  EXPECT_EQ(regions[0].first, 0);
+  EXPECT_EQ(regions[0].last, 6);
   EXPECT_EQ(regions[1].collectives, (std::vector<size_t>{9,11}));
+  EXPECT_EQ(regions[1].first, 8);
+  EXPECT_EQ(regions[1].last, 12);
   EXPECT_THROW(NativeDependencyPlan::compile(commands).serial_regions(commands, {}),
                std::invalid_argument);
 }
